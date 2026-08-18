@@ -1,0 +1,66 @@
+# piper-trainer
+#
+#   docker compose --profile cuda build && docker compose --profile cuda run --rm trainer-cuda doctor
+#   docker compose --profile rocm build && docker compose --profile rocm run --rm trainer-rocm doctor
+#
+# WORKSPACE is your voice-training directory on the host. Everything the
+# container writes lands there in a plain, human-readable layout that also
+# works with the bare piper1-gpl CLI.
+
+# NOTE: prefer ./run.sh — it handles rootless-podman UID mapping, SELinux
+# labelling, and the group-name-vs-GID difference automatically. This compose
+# file targets ROOTFUL DOCKER; under rootless podman the `user:` line below
+# breaks writes to the mounted volume (host UID already maps to container
+# root), and podman cannot resolve the 'render' group name inside a Debian
+# image, so numeric GIDs are used instead.
+x-common: &common
+  volumes:
+    - ${WORKSPACE:-./workspace}:/workspace:Z
+  user: "${UID:-1000}:${GID:-1000}"
+  shm_size: "8gb"
+  stdin_open: true
+  tty: true
+
+services:
+  trainer-cuda:
+    <<: *common
+    profiles: ["cuda"]
+    build:
+      context: .
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
+    image: piper-trainer:cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  trainer-rocm:
+    <<: *common
+    profiles: ["rocm"]
+    build:
+      context: .
+      args:
+        TORCH_INDEX_URL: https://rocm.nightlies.amd.com/v2/gfx1151/
+    image: piper-trainer:rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "${VIDEO_GID:-39}"
+      - "${RENDER_GID:-105}"
+    security_opt:
+      - seccomp:unconfined
+
+  # CPU-only: works anywhere, slow but a valid fallback
+  trainer-cpu:
+    <<: *common
+    profiles: ["cpu"]
+    build:
+      context: .
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+    image: piper-trainer:cpu
