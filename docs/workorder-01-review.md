@@ -2,7 +2,8 @@
 
 **Work order:** `docs/workorder-01-metadata-contract.md` (metadata format contract)
 **Date:** 2026-08-20
-**Status:** all five tasks complete; nothing committed — tree left for review.
+**Status:** all five tasks complete; committed as `ddec4c0`. Post-review
+follow-up `74c4aa0` closed two test-coverage gaps (§6).
 
 ---
 
@@ -17,14 +18,14 @@
  5 files changed, 49 insertions(+), 45 deletions(-)
 ```
 
-New (untracked) files, not in the diff stat:
+New files added in the commit (not in the diff stat above):
 
 | File | Purpose |
 |---|---|
 | `src/piper_trainer/metadata.py` | Task 1 — canonical metadata I/O |
-| `tests/test_metadata.py` | 18 tests |
-| `tests/test_clean.py` | 14 tests |
-| `tests/test_validate.py` | 10 tests |
+| `tests/test_metadata.py` | 19 tests |
+| `tests/test_clean.py` | 16 tests |
+| `tests/test_validate.py` | 11 tests |
 | `tests/test_train.py` | 10 tests |
 | `tests/test_export.py` | 5 tests |
 | `.gitignore` | added (see §5) |
@@ -288,21 +289,23 @@ index 844cd6d..ec01265 100644
 ## 4. `pytest -q` output (tail)
 
 ```
-.............................................................          [100%]
-61 passed in 0.12s
+...............................................................          [100%]
+63 passed in 0.12s
 ```
 
-Breakdown: `test_metadata.py` 18, `test_clean.py` 14, `test_validate.py` 10,
-`test_train.py` 10, `test_export.py` 5, plus 4 in-module doctest-adjacent
-helpers counted within those files. Pure-logic only; no network, GPU, or
-audio processing. WAV fixtures are generated with the `wave` module (sine
-tones) inside `tmp_path`.
+Breakdown: `test_metadata.py` 20, `test_clean.py` 17, `test_validate.py` 11,
+`test_train.py` 10, `test_export.py` 5. (An earlier revision of this section
+said 18/14/10/10/5 "plus 4 helpers" — that accounting was wrong; pytest
+collects test functions only. Correct counts at `ddec4c0` were
+19/16/11/10/5 = 61; the follow-up in §6 added two.) Pure-logic only; no
+network, GPU, or audio processing. WAV fixtures are generated with the
+`wave` module (sine tones) inside `tmp_path`.
 
 ### Acceptance checks (work order §Acceptance)
 
 | Check | Result |
 |---|---|
-| `pytest -q` all pass | 61 passed |
+| `pytest -q` all pass | 63 passed |
 | `grep -rn 'split("|")' src/` | no hits |
 | `grep -rn "read_text\|write_text" src/piper_trainer/metadata.py` | no hits |
 | `grep -rn "^import csv" src/piper_trainer/validate.py` | no hits |
@@ -370,3 +373,19 @@ Also verified live: Task 4 name precedence
    minimal non-empty text ("A"); a truly empty text field is separately
    specified as a `columns` Problem and cannot round-trip by design. Both
    behaviors are tested.
+
+---
+
+## 6. Post-review follow-up (`74c4aa0`)
+
+Independent review by mutation testing confirmed the suite catches the two
+headline bugs (CRLF writer regression, text-mode line-ending detection) but
+found two coverage gaps, both now closed:
+
+- reading a legacy file with **unescaped** pipes in the text had no test —
+  the `DELIMITER.join(fields[1:])` rejoin in `read()` could be deleted with
+  the full suite still green
+- `build_plan`'s mapping of `crlf`/`columns`/`blank-row` findings into
+  `plan.normalize_file` was untested (only the `apply` side was)
+
+Each new test fails exactly once when its bug is reintroduced.
