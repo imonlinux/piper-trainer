@@ -1,13 +1,13 @@
 """Pre-flight checks. Every rule here exists because it cost someone an hour."""
 from __future__ import annotations
 
-import csv
 import re
 import statistics
 import subprocess
 import wave
 from pathlib import Path
 
+from . import metadata
 from .config import Project, TIERS
 
 # What espeak-ng will mangle if left in a transcript.
@@ -84,23 +84,20 @@ def validate_dataset(project: Project, tier: str = "medium",
         return [Finding("error", "no-metadata",
                         f"{project.metadata} does not exist")]
 
-    raw = project.metadata.read_text()
-    if "\r\n" in raw:
+    endings = metadata.line_endings(project.metadata)
+    if endings == "crlf":
         f.append(Finding("error", "crlf",
                          "metadata.csv has CRLF line endings — strip with "
                          "sed -i 's/\\r$//'"))
+    elif endings == "mixed":
+        f.append(Finding("error", "crlf",
+                         "metadata.csv has mixed line endings (LF and CRLF) "
+                         "— normalize to LF (e.g. sed -i 's/\\r$//')"))
 
-    rows, bad_cols = [], []
-    for i, line in enumerate(raw.splitlines(), start=1):
-        if not line.strip():
-            f.append(Finding("error", "blank-row", f"line {i} is blank"))
-            continue
-        parts = line.split("|")
-        if len(parts) < 2 or not parts[1].strip():
-            bad_cols.append(i)
-            continue
-        rows.append((parts[0], "|".join(parts[1:])))
-
+    rows, problems = metadata.read(project.metadata)
+    for p in (p for p in problems if p.code == "blank-row"):
+        f.append(Finding("error", "blank-row", f"line {p.line_no} is blank"))
+    bad_cols = [p.line_no for p in problems if p.code == "columns"]
     if bad_cols:
         f.append(Finding("error", "columns",
                          f"{len(bad_cols)} row(s) lack a transcript "

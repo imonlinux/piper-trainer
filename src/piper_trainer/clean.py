@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import metadata
 from .config import Project
 from .validate import Finding
 
@@ -76,28 +77,12 @@ def repair_text(text: str) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
-def read_rows(project: Project) -> list[tuple[str, str]]:
-    rows = []
-    for line in project.metadata.read_text().splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("|")
-        if len(parts) >= 2:
-            rows.append((parts[0], "|".join(parts[1:])))
-    return rows
-
-
-def write_rows(project: Project, rows: list[tuple[str, str]]) -> None:
-    with project.metadata.open("w", newline="") as fh:
-        csv.writer(fh, delimiter="|", quoting=csv.QUOTE_NONE,
-                   escapechar="\\").writerows(rows)
-
-
 def build_plan(project: Project, findings: list[Finding],
                only: set[str] | None = None,
                exclude: set[str] | None = None) -> Plan:
     plan = Plan()
-    rows = dict(read_rows(project)) if project.metadata.exists() else {}
+    rows = dict(metadata.read(project.metadata)[0]) \
+        if project.metadata.exists() else {}
 
     for f in findings:
         code = f.code
@@ -164,7 +149,7 @@ def describe(plan: Plan, total_rows: int) -> list[str]:
 
 
 def apply(project: Project, plan: Plan, force: bool = False) -> dict:
-    rows = read_rows(project)
+    rows, problems = metadata.read(project.metadata)
     total = len(rows)
     if total and len(plan.drop_rows) / total > MAX_FRACTION and not force:
         raise RuntimeError(
@@ -172,6 +157,10 @@ def apply(project: Project, plan: Plan, force: bool = False) -> dict:
             f"({100*len(plan.drop_rows)/total:.0f}%). That usually means a "
             f"validation threshold is wrong, not the data. Use --force to "
             f"override, or narrow with --only.")
+
+    col_problems = [p for p in problems if p.code == "columns"]
+    normalized = len(col_problems) + \
+        len([p for p in problems if p.code == "blank-row"])
 
     qdir = project.dataset / "quarantine"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -191,9 +180,11 @@ def apply(project: Project, plan: Plan, force: bool = False) -> dict:
         if cid in plan.repairs:
             text = plan.repairs[cid][1]
         kept.append((cid, text))
-    write_rows(project, kept)
+    # Rewriting through the canonical writer incidentally removes CRLF line
+    # endings, blank rows, and the malformed rows reported as columns Problems.
+    metadata.write(project.metadata, kept)
 
-    if plan.quarantine or plan.drop_rows or plan.repairs:
+    if plan.normalize_file or plan.quarantine or plan.drop_rows or plan.repairs:
         manifest = qdir / "manifest.csv" if plan.quarantine else \
             project.dataset / "clean-log.csv"
         manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -203,6 +194,10 @@ def apply(project: Project, plan: Plan, force: bool = False) -> dict:
             if new:
                 w.writerow(["timestamp", "clip_id", "action", "reasons", "text"])
             row_text = dict(rows)
+            # malformed rows have no usable clip id; identify by line number
+            for p in col_problems:
+                w.writerow([stamp, f"line {p.line_no}", "drop-row",
+                            "columns", p.detail])
             for cid in sorted(plan.quarantine):
                 w.writerow([stamp, cid, "quarantine",
                             ";".join(plan.reasons.get(cid, [])),
@@ -217,7 +212,8 @@ def apply(project: Project, plan: Plan, force: bool = False) -> dict:
                             f"{old} -> {new_t}"])
 
     return {"repaired": len(plan.repairs), "quarantined": len(moved),
-            "rows_removed": total - len(kept), "rows_remaining": len(kept)}
+            "rows_removed": total - len(kept) + len(col_problems),
+            "rows_remaining": len(kept), "normalized": normalized}
 
 
 def restore(project: Project, clip_ids: list[str] | None = None) -> int:

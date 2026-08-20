@@ -10,8 +10,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import (clean as clean_mod, doctor, export as export_mod, prepare,
-               train as train_mod, transcribe)
+from . import (clean as clean_mod, doctor, export as export_mod, metadata,
+               prepare, train as train_mod, transcribe)
 from .config import Project, TIERS
 from .validate import validate_checkpoint, validate_dataset
 
@@ -41,8 +41,13 @@ def _resolve_voice(proj: Project, given: str | None) -> str:
 
 
 def _project(args) -> Project:
-    return Project(root=Path(args.project).resolve(),
-                   name=args.name or Path(args.project).resolve().name)
+    root = Path(args.project).resolve()
+    name = args.name
+    if not name:
+        # saved name wins over the directory name: `init <dir> --name x`
+        # records x, and every later command must keep using it
+        name = Project(root=root, name=root.name).meta().get("name")
+    return Project(root=root, name=name or root.name)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -213,7 +218,8 @@ def main(argv: list[str] | None = None) -> int:
             proj, findings,
             only=set(args.only.split(",")) if args.only else None,
             exclude=set(args.exclude.split(",")) if args.exclude else None)
-        total = len(clean_mod.read_rows(proj)) if proj.metadata.exists() else 0
+        total = len(metadata.read(proj.metadata)[0]) \
+            if proj.metadata.exists() else 0
         lines = clean_mod.describe(plan, total)
         print("\n".join(lines) if lines else "nothing to do")
         if not plan.touched and not plan.normalize_file:

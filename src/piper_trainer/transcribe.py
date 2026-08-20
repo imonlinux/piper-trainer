@@ -6,6 +6,7 @@ import os
 import wave
 from pathlib import Path
 
+from . import metadata
 from .config import Project
 
 
@@ -45,10 +46,7 @@ def transcribe(project: Project, model_size: str | None = None,
         audit.append([wav.name, f"{dur:.2f}", f"{cps:.1f}",
                       f"{info.language_probability:.3f}", text])
 
-    project.metadata.parent.mkdir(parents=True, exist_ok=True)
-    with project.metadata.open("w", newline="") as f:
-        csv.writer(f, delimiter="|", quoting=csv.QUOTE_NONE,
-                   escapechar="\\").writerows(rows)
+    metadata.write(project.metadata, rows)
     with project.audit.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["file", "duration", "chars_per_sec", "lang_prob", "text"])
