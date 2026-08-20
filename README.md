@@ -24,6 +24,19 @@ Existing Piper training GUIs wrap the **archived** `rhasspy/piper` toolchain. Th
 
 It also patches `export_onnx.py` with `dynamo=False`, because recent torch defaults to the dynamo exporter, which can't trace VITS's stochastic duration predictor and dies with `GuardOnDataDependentSymNode`.
 
+## Installation
+
+The supported path is the **container** — build it and use `./run.sh`. The
+default `pip install piper-trainer` is deliberately dependency-free and will
+import fine but fail at the first real call: the pipeline needs `piper1-gpl`
+itself (including its two C extensions, `espeakbridge` and `monotonic_align`),
+plus `ffmpeg`, `espeak-ng`, and `deep-filter` on `PATH` — none of which are
+pip-installable dependencies. A standalone install is at least *possible*
+with the `[runtime]` extra (`pip install 'piper-trainer[runtime]'`, covering
+`auditok`, `faster-whisper`, `soundfile`, `numpy`), but you are then on the
+hook for the rest yourself. `piper-trainer doctor` reports exactly what is
+missing in any environment.
+
 ## Build
 
 ```bash
@@ -178,9 +191,13 @@ Deliberately human-readable and toolchain-compatible: every file works with the 
 
 ## Status
 
-**ROCm image builds and passes `doctor` on gfx1151.** The pipeline commands
-(`prepare` → `transcribe` → `validate` → `train` → `export`) are implemented
-but not yet exercised end to end inside the container. CUDA and CPU variants
-share the same Dockerfile and are untested.
+**ROCm image builds and passes `doctor` on gfx1151.** The CUDA image has
+been exercised in-container (work order 03): adversarial `raw/` naming
+(spaces, unicode, collisions), idempotent `prepare` against real
+ffmpeg/DeepFilterNet/auditok — including skip-on-repeat across container
+restarts — and the project lock (concurrent refusal naming the holder, and
+immediate release on SIGKILL). `transcribe`/`train`/`export` share the same
+code paths but have not been run end to end in-container. The CPU variant
+shares the same Dockerfile and is untested.
 
 Next: a FastAPI + worker layer over these same functions, with a waveform view for auditok threshold tuning and a sortable audit table for transcript review.

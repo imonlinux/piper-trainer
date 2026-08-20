@@ -49,8 +49,10 @@ def transcribe(project: Project, model_size: str | None = None,
     """
     wavs = sorted(project.wavs.glob("*.wav"))
     existing: dict[str, str] = {}
+    existing_problems: list = []
     if not retranscribe and project.metadata.exists():
-        existing = dict(metadata.read(project.metadata)[0])
+        existing, existing_problems = metadata.read(project.metadata)
+        existing = dict(existing)
     audit_old = _load_audit(project.audit)
 
     model = None
@@ -88,11 +90,17 @@ def transcribe(project: Project, model_size: str | None = None,
         rows.append([wav.stem, text])
         audit.append([wav.name, f"{dur:.2f}", f"{cps:.1f}", prob, text])
 
-    metadata.write(project.metadata, rows)
+    # Malformed lines from the previous metadata are carried through the
+    # rewrite (appended after the new rows, in original order) rather than
+    # dropped — validate and clean exist to deal with them afterwards.
+    preserve = {len(rows) + 1 + i: p.raw
+                for i, p in enumerate(existing_problems)}
+    metadata.write(project.metadata, rows, raw_lines=preserve)
     with project.audit.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["file", "duration", "chars_per_sec", "lang_prob", "text"])
         w.writerows(audit)
 
     return {"clips": len(rows), "transcribed": transcribed, "skipped": skipped,
+            "malformed_preserved": len(preserve),
             "total_seconds": total_seconds}

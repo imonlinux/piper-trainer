@@ -96,3 +96,22 @@ def test_retranscribe_forces_full_pass(tmp_path, fake_whisper):
     stats = transcribe.transcribe(proj, retranscribe=True)
     assert stats["transcribed"] == 2
     assert stats["skipped"] == 0
+
+
+def test_malformed_lines_survive_only_missing_rewrite(tmp_path, fake_whisper):
+    """A hand-edited malformed row must survive a --only-missing run that
+    rewrites metadata.csv — appended at the end, counted in the result."""
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    write_tone(proj.wavs / "a.wav")
+    write_tone(proj.wavs / "c.wav")
+    proj.metadata.write_bytes(b"a|existing row\nno-delimiter-here\nb|\n")
+
+    stats = transcribe.transcribe(proj)  # c is missing -> only c transcribed
+
+    assert stats["malformed_preserved"] == 2
+    data = proj.metadata.read_bytes()
+    assert data.endswith(b"no-delimiter-here\nb|\n")  # appended, not dropped
+    rows, problems = metadata.read(proj.metadata)
+    assert [r[0] for r in rows] == ["a", "c"]
+    assert len(problems) == 2

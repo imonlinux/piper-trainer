@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .config import Project, TIERS, voice_stem
 
+DEFAULT_MAX_EPOCHS = 4000
+
 
 def resolve_max_epochs(checkpoint_epoch: int | None,
                        add_epochs: int | None,
@@ -17,7 +19,7 @@ def resolve_max_epochs(checkpoint_epoch: int | None,
     CLI and the future API layer share the arithmetic (design doc §1.4).
     """
     if max_epochs is None:
-        max_epochs = 4000
+        max_epochs = DEFAULT_MAX_EPOCHS
     if add_epochs is None:
         return max_epochs
     if checkpoint_epoch is None:

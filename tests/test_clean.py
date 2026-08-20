@@ -1,11 +1,12 @@
 """Tests for clean: text repair, plan building, and apply."""
+import csv
 from pathlib import Path
 
 import pytest
 
 from piper_trainer import metadata
 from piper_trainer.clean import (ABBREV, SYMBOLS, Plan, apply, build_plan,
-                                 repair_text)
+                                 describe, repair_text, restore)
 from piper_trainer.config import Project
 from piper_trainer.validate import Finding
 
@@ -268,6 +269,136 @@ def test_apply_missing_metadata_raises(tmp_path):
     proj.ensure()
     with pytest.raises(FileNotFoundError, match="does not exist"):
         apply(proj, Plan())
+
+
+# --------------------------------------------------------------------- describe
+
+def test_describe_distinguishes_line_ending_repairs():
+    plan = Plan()
+    plan.normalize_file = ["crlf"]
+    lines = describe(plan, 0, endings="crlf")
+    assert any("converted CRLF line endings to LF" in ln for ln in lines)
+    lines = describe(plan, 0, endings="mixed")
+    assert any("converted CRLF line endings to LF" in ln for ln in lines)
+    lines = describe(plan, 0, endings="none")
+    assert any("added missing final newline" in ln for ln in lines)
+    # no endings info supplied: neutral phrasing, no crash
+    assert describe(plan, 0)
+
+
+def test_apply_reports_which_ending_repair(tmp_path):
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    proj.metadata.write_bytes(b"a|ok\r\n")
+    plan = Plan()
+    plan.normalize_file = ["crlf"]
+    stats = apply(proj, plan)
+    assert stats["line_endings_fixed"] is True
+    assert stats["line_endings_repair"] == "converted CRLF line endings to LF"
+    proj.metadata.write_bytes(b"a|ok")  # no final newline at all
+    stats = apply(proj, plan)
+    assert stats["line_endings_repair"] == "added missing final newline"
+
+
+# -------------------------------------------------------------------- restore
+
+def seed_quarantine(proj: Project, entries: list[tuple], files: list[str]):
+    """entries: (timestamp, clip_id, action, reasons, text) rows for the
+    manifest; files: stems to place in quarantine/."""
+    qdir = proj.dataset / "quarantine"
+    qdir.mkdir(parents=True, exist_ok=True)
+    with (qdir / "manifest.csv").open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["timestamp", "clip_id", "action", "reasons", "text"])
+        w.writerows(entries)
+    for stem in files:
+        (qdir / f"{stem}.wav").write_bytes(b"RIFF")
+
+
+def test_restore_recovers_rows_from_manifest(tmp_path):
+    proj = make_project(tmp_path, [("keep1", "stays")])
+    seed_quarantine(proj, [
+        ("20260101T000000Z", "gone1", "quarantine", "short-clips",
+         "the first clip"),
+        ("20260101T000000Z", "gone2", "quarantine", "cps-outliers",
+         "the second clip"),
+    ], files=["gone1", "gone2"])
+
+    stats = restore(proj)
+
+    assert stats["files_restored"] == 2
+    assert stats["rows_restored"] == 2
+    assert stats["conflicts"] == []
+    rows, _ = metadata.read(proj.metadata)
+    assert ("gone1", "the first clip") in rows
+    assert ("gone2", "the second clip") in rows
+    assert rows[0] == ("keep1", "stays")  # existing rows keep their position
+    assert not (proj.dataset / "quarantine" / "gone1.wav").exists()
+    assert (proj.wavs / "gone1.wav").exists()
+
+
+def test_restore_files_only_leaves_metadata_alone(tmp_path):
+    proj = make_project(tmp_path, [("keep1", "stays")])
+    seed_quarantine(proj, [
+        ("20260101T000000Z", "gone1", "quarantine", "short-clips", "text"),
+    ], files=["gone1"])
+    stats = restore(proj, files_only=True)
+    assert stats["files_restored"] == 1
+    assert stats["rows_restored"] == 0
+    rows, _ = metadata.read(proj.metadata)
+    assert rows == [("keep1", "stays")]
+
+
+def test_restore_most_recent_manifest_entry_wins(tmp_path):
+    proj = make_project(tmp_path, [])
+    seed_quarantine(proj, [
+        ("20260101T000000Z", "c1", "quarantine", "short-clips", "old text"),
+        ("20260201T000000Z", "c1", "quarantine", "cps-outliers",
+         "newer text"),
+    ], files=["c1"])
+    stats = restore(proj)
+    assert stats["rows_restored"] == 1
+    rows, _ = metadata.read(proj.metadata)
+    assert rows == [("c1", "newer text")]
+
+
+def test_restore_does_not_overwrite_existing_row(tmp_path):
+    proj = make_project(tmp_path, [("c1", "hand-edited text")])
+    seed_quarantine(proj, [
+        ("20260101T000000Z", "c1", "quarantine", "short-clips",
+         "manifest text"),
+    ], files=["c1"])
+    stats = restore(proj)
+    # file comes back, row does not: the counts legitimately differ
+    assert stats["files_restored"] == 1
+    assert stats["rows_restored"] == 0
+    assert stats["conflicts"] == ["c1"]
+    rows, _ = metadata.read(proj.metadata)
+    assert rows == [("c1", "hand-edited text")]
+
+
+def test_restore_preserves_malformed_lines(tmp_path):
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    proj.metadata.write_bytes(b"keep|row\nbadline\n")
+    seed_quarantine(proj, [
+        ("20260101T000000Z", "gone1", "quarantine", "short-clips", "text"),
+    ], files=["gone1"])
+    restore(proj)
+    data = proj.metadata.read_bytes()
+    assert data == b"keep|row\ngone1|text\nbadline\n" or \
+        data == b"keep|row\nbadline\ngone1|text\n"  # malformed survives
+
+
+def test_restore_without_manifest_still_moves_files(tmp_path):
+    proj = make_project(tmp_path, [("keep1", "stays")])
+    qdir = proj.dataset / "quarantine"
+    qdir.mkdir(parents=True, exist_ok=True)
+    (qdir / "orphan.wav").write_bytes(b"RIFF")
+    stats = restore(proj)
+    assert stats["files_restored"] == 1
+    assert stats["rows_restored"] == 0
+    assert (proj.wavs / "orphan.wav").exists()
 
 
 def test_apply_repairs_text(tmp_path):

@@ -7,12 +7,14 @@ same functions rather than shelling out.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 from pathlib import Path
 
-from . import (clean as clean_mod, doctor, export as export_mod, metadata,
-               prepare, train as train_mod, transcribe)
+from . import (clean as clean_mod, doctor, export as export_mod, lock,
+               metadata, prepare, train as train_mod, transcribe)
 from .config import Project, TIERS
+from .train import DEFAULT_MAX_EPOCHS
 from .validate import validate_checkpoint, validate_dataset
 
 
@@ -50,6 +52,21 @@ def _project(args) -> Project:
     return Project(root=root, name=name or root.name)
 
 
+@contextlib.contextmanager
+def _locked(proj: Project, command: str, wait: float):
+    """Acquire the project lock or exit non-zero naming the holder.
+
+    Mutating commands hold it for their duration; read-only commands
+    (validate, sources, doctor, clean dry run) never acquire it.
+    """
+    try:
+        with lock.project_lock(proj, command=command, wait=wait):
+            yield
+    except lock.LockBusy as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1) from None
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="piper-trainer",
@@ -59,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
     def add_project(sp):
         sp.add_argument("project", help="project directory (mounted volume)")
         sp.add_argument("--name", help="voice name (default: directory name)")
+
+    def add_lock(sp):
+        sp.add_argument("--wait", type=float, metavar="N", default=0.0,
+                        help="wait up to N seconds for the project lock "
+                             "before giving up (default: fail immediately)")
 
     # doctor -----------------------------------------------------------------
     sub.add_parser("doctor", help="verify the environment")
@@ -94,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--force", action="store_true",
                     help="re-run stages even when inputs and parameters "
                          "are unchanged")
+    add_lock(sp)
 
     # transcribe -------------------------------------------------------------
     sp = sub.add_parser("transcribe", help="Whisper -> metadata.csv + audit.csv")
@@ -107,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--only-missing", action="store_true",
                     help="transcribe only clips missing from metadata.csv "
                          "(the default; stated explicitly for the API layer)")
+    add_lock(sp)
 
     # validate ---------------------------------------------------------------
     sp = sub.add_parser("validate", help="pre-flight checks")
@@ -128,10 +152,16 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--exclude", help="comma-separated finding codes to skip")
     sp.add_argument("--force", action="store_true",
                     help="allow removing more than a third of the dataset")
+    add_lock(sp)
 
     sp = sub.add_parser("restore", help="move quarantined clips back")
     add_project(sp)
     sp.add_argument("--ids", help="comma-separated clip ids; default: all")
+    sp.add_argument("--files-only", action="store_true",
+                    help="move WAVs back but leave metadata.csv alone "
+                         "(rows are otherwise restored from the quarantine "
+                         "manifest)")
+    add_lock(sp)
 
     # train ------------------------------------------------------------------
     sp = sub.add_parser("train", help="run training")
@@ -143,8 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     # default None so an explicit --max-epochs can be told apart from the
     # default when --add-epochs is in play (they are mutually exclusive)
     sp.add_argument("--max-epochs", type=int, default=None,
-                    help="absolute epoch ceiling (default 4000); "
-                         "mutually exclusive with --add-epochs")
+                    help=f"absolute epoch ceiling (default "
+                         f"{DEFAULT_MAX_EPOCHS}); mutually exclusive with "
+                         f"--add-epochs")
     sp.add_argument("--add-epochs", type=int, default=None,
                     help="train N more epochs on top of the resume "
                          "checkpoint's epoch; requires --resume")
@@ -163,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--precision", default="32-true")
     sp.add_argument("--skip-validate", action="store_true")
     sp.add_argument("--dry-run", action="store_true")
+    add_lock(sp)
 
     # export -----------------------------------------------------------------
     sp = sub.add_parser("export", help="checkpoint -> .onnx + complete .onnx.json")
@@ -175,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--length-scale", type=float)
     sp.add_argument("--noise-scale", type=float)
     sp.add_argument("--noise-w", type=float)
+    add_lock(sp)
 
     args = p.parse_args(argv)
 
@@ -215,13 +248,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "prepare":
-        stats = prepare.run_all(
-            proj, tier=args.tier, channel=args.channel,
-            denoise_enabled=not args.no_denoise, force=args.force,
-            energy_threshold=args.energy_threshold,
-            min_dur=args.min_dur, max_dur=args.max_dur,
-            max_silence=args.max_silence,
-            max_leading_silence=args.pad, max_trailing_silence=args.pad)
+        with _locked(proj, "prepare", args.wait):
+            stats = prepare.run_all(
+                proj, tier=args.tier, channel=args.channel,
+                denoise_enabled=not args.no_denoise, force=args.force,
+                energy_threshold=args.energy_threshold,
+                min_dur=args.min_dur, max_dur=args.max_dur,
+                max_silence=args.max_silence,
+                max_leading_silence=args.pad, max_trailing_silence=args.pad)
         for k, v in stats.items():
             print(f"{k}: {v}")
         if stats["clips"] == 0:
@@ -235,13 +269,17 @@ def main(argv: list[str] | None = None) -> int:
             print("--retranscribe and --only-missing are mutually exclusive",
                   file=sys.stderr)
             return 2
-        stats = transcribe.transcribe(proj, model_size=args.model,
-                                      language=args.language,
-                                      device=args.device,
-                                      retranscribe=args.retranscribe)
+        with _locked(proj, "transcribe", args.wait):
+            stats = transcribe.transcribe(proj, model_size=args.model,
+                                          language=args.language,
+                                          device=args.device,
+                                          retranscribe=args.retranscribe)
         print(f"{stats['transcribed']} transcribed, {stats['skipped']} "
               f"skipped, {stats['total_seconds']/60:.1f} min -> "
               f"{proj.metadata}")
+        if stats["malformed_preserved"]:
+            print(f"{stats['malformed_preserved']} malformed line(s) from "
+                  f"the previous metadata carried through — run validate")
         print(f"review {proj.audit} before training")
         return 0
 
@@ -264,7 +302,9 @@ def main(argv: list[str] | None = None) -> int:
             exclude=set(args.exclude.split(",")) if args.exclude else None)
         total = len(metadata.read(proj.metadata)[0]) \
             if proj.metadata.exists() else 0
-        lines = clean_mod.describe(plan, total)
+        endings = metadata.line_endings(proj.metadata) \
+            if proj.metadata.exists() else None
+        lines = clean_mod.describe(plan, total, endings=endings)
         print("\n".join(lines) if lines else "nothing to do")
         if not plan.touched and not plan.normalize_file:
             return 0
@@ -272,7 +312,8 @@ def main(argv: list[str] | None = None) -> int:
             print("\n(dry run — re-run with --apply to make these changes)")
             return 0
         try:
-            stats = clean_mod.apply(proj, plan, force=args.force)
+            with _locked(proj, "clean", args.wait):
+                stats = clean_mod.apply(proj, plan, force=args.force)
         except (RuntimeError, FileNotFoundError) as exc:
             print(f"\n{exc}", file=sys.stderr)
             return 1
@@ -284,10 +325,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "restore":
         ids = args.ids.split(",") if args.ids else None
-        n = clean_mod.restore(proj, ids)
-        print(f"restored {n} clip(s) to {proj.wavs}")
-        if n:
-            print("re-run transcribe (or edit metadata.csv) to re-add their rows")
+        with _locked(proj, "restore", args.wait):
+            stats = clean_mod.restore(proj, ids, files_only=args.files_only)
+        print(f"restored {stats['files_restored']} file(s), "
+              f"{stats['rows_restored']} row(s) to {proj.wavs}")
+        if stats["conflicts"]:
+            print(f"! row(s) already present for: "
+                  f"{', '.join(stats['conflicts'])} — not overwritten")
+        if stats["rows_restored"] == 0 and not args.files_only \
+                and stats["files_restored"]:
+            print("no rows recovered from the manifest — re-run transcribe "
+                  "or edit metadata.csv by hand")
         return 0
 
     if args.cmd == "train":
@@ -339,22 +387,23 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         # target_epochs: fresh runs (re)set it for the tier; a resume never
         # overwrites it (design doc §1.4 uses it as the progress denominator)
-        if not args.dry_run:
-            targets = proj.get("target_epochs") or {}
-            if resume is None or args.tier not in targets:
-                targets[args.tier] = max_epochs
-                proj.set(target_epochs=targets)
-        cmd = train_mod.build_command(
-            proj, tier=args.tier, espeak_voice=args.espeak_voice,
-            batch_size=args.batch_size, max_epochs=max_epochs,
-            num_workers=args.num_workers,
-            validation_split=validation_split,
-            warmstart=args.warmstart, resume=resume,
-            accelerator=args.accelerator, precision=args.precision)
-        if args.dry_run:
-            print(" \\\n  ".join(cmd))
-            return 0
-        return train_mod.run(cmd)
+        with _locked(proj, "train", args.wait):
+            if not args.dry_run:
+                targets = proj.get("target_epochs") or {}
+                if resume is None or args.tier not in targets:
+                    targets[args.tier] = max_epochs
+                    proj.set(target_epochs=targets)
+            cmd = train_mod.build_command(
+                proj, tier=args.tier, espeak_voice=args.espeak_voice,
+                batch_size=args.batch_size, max_epochs=max_epochs,
+                num_workers=args.num_workers,
+                validation_split=validation_split,
+                warmstart=args.warmstart, resume=resume,
+                accelerator=args.accelerator, precision=args.precision)
+            if args.dry_run:
+                print(" \\\n  ".join(cmd))
+                return 0
+            return train_mod.run(cmd)
 
     if args.cmd == "export":
         args.espeak_voice = _resolve_voice(proj, args.espeak_voice)
@@ -363,10 +412,11 @@ def main(argv: list[str] | None = None) -> int:
             print("no checkpoint found", file=sys.stderr)
             return 1
         print(f"exporting {ckpt}")
-        onnx_path, json_path = export_mod.export(
-            proj, args.tier, ckpt, voice_name=args.voice_name,
-            espeak_voice=args.espeak_voice, length_scale=args.length_scale,
-            noise_scale=args.noise_scale, noise_w=args.noise_w)
+        with _locked(proj, "export", args.wait):
+            onnx_path, json_path = export_mod.export(
+                proj, args.tier, ckpt, voice_name=args.voice_name,
+                espeak_voice=args.espeak_voice, length_scale=args.length_scale,
+                noise_scale=args.noise_scale, noise_w=args.noise_w)
         problems = export_mod.verify(onnx_path, json_path)
         print(f"{onnx_path}\n{json_path}")
         for p_ in problems:

@@ -129,10 +129,24 @@ def build_plan(project: Project, findings: list[Finding],
     return plan
 
 
-def describe(plan: Plan, total_rows: int) -> list[str]:
+def endings_phrase(endings: str | None) -> str:
+    """Human phrasing for the line-ending repair the rewrite will make."""
+    if endings in ("crlf", "mixed"):
+        return "converted CRLF line endings to LF"
+    if endings == "none":
+        return "added missing final newline"
+    return "normalized line endings to LF"
+
+
+def describe(plan: Plan, total_rows: int,
+             endings: str | None = None) -> list[str]:
     out = []
     if plan.normalize_file:
-        out.append(f"· normalize metadata.csv ({', '.join(sorted(set(plan.normalize_file)))})")
+        parts = sorted(set(plan.normalize_file))
+        if "crlf" in parts:
+            parts = [p for p in parts if p != "crlf"]
+            parts.append(endings_phrase(endings))
+        out.append(f"· normalize metadata.csv ({', '.join(parts)})")
     for cid, (old, new) in sorted(plan.repairs.items()):
         out.append(f"~ repair  {cid}\n    - {old}\n    + {new}")
     for cid in sorted(plan.quarantine):
@@ -197,7 +211,6 @@ def apply(project: Project, plan: Plan, force: bool = False) -> dict:
             if src.exists():
                 shutil.move(str(src), str(qdir / src.name))
                 moved.append(cid)
-
     kept: list[tuple[str, str]] = []
     for cid, text in rows:
         if cid in plan.drop_rows:
@@ -238,19 +251,69 @@ def apply(project: Project, plan: Plan, force: bool = False) -> dict:
             "rows_removed": len(rows) - len(kept) + malformed_rows_dropped,
             "rows_remaining": len(kept),
             "malformed_rows_dropped": malformed_rows_dropped,
-            "line_endings_fixed": endings_before != "lf"}
+            "line_endings_fixed": endings_before != "lf",
+            "line_endings_repair": endings_phrase(endings_before)
+            if endings_before != "lf" else ""}
 
 
-def restore(project: Project, clip_ids: list[str] | None = None) -> int:
-    """Move quarantined clips back. Metadata rows must be re-added by
-    re-running transcribe, or by hand from quarantine/manifest.csv."""
+def _manifest_rows(project: Project) -> list[dict]:
+    """Quarantine manifest entries, in file (append) order."""
+    manifest = project.dataset / "quarantine" / "manifest.csv"
+    if not manifest.exists():
+        return []
+    out = []
+    with manifest.open(newline="") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("clip_id"):
+                out.append(row)
+    return out
+
+
+def restore(project: Project, clip_ids: list[str] | None = None,
+            files_only: bool = False) -> dict:
+    """Move quarantined clips back and restore their metadata rows.
+
+    Rows are recovered from quarantine/manifest.csv, which has recorded each
+    clip's transcript since the first quarantine. For a clip with several
+    entries the most recent wins; a clip whose latest entry is not a
+    quarantine (restored and not re-quarantined since) gets no row back.
+    An existing row for the same id is never overwritten — the conflict is
+    reported instead. Restored rows are appended sorted by clip id; existing
+    rows and malformed lines keep their positions.
+    """
     qdir = project.dataset / "quarantine"
-    if not qdir.exists():
-        return 0
-    count = 0
-    for wav in sorted(qdir.glob("*.wav")):
-        if clip_ids and wav.stem not in clip_ids:
-            continue
-        shutil.move(str(wav), str(project.wavs / wav.name))
-        count += 1
-    return count
+    files_restored = 0
+    if qdir.exists():
+        for wav in sorted(qdir.glob("*.wav")):
+            if clip_ids and wav.stem not in clip_ids:
+                continue
+            shutil.move(str(wav), str(project.wavs / wav.name))
+            files_restored += 1
+
+    rows_restored, conflicts = 0, []
+    if not files_only and project.metadata.exists():
+        # last manifest entry per clip id decides
+        latest: dict[str, dict] = {}
+        for entry in _manifest_rows(project):
+            latest[entry["clip_id"]] = entry
+        wanted = sorted(cid for cid in latest
+                        if clip_ids is None or cid in clip_ids)
+        if wanted:
+            rows, problems = metadata.read(project.metadata)
+            preserve = {p.line_no: p.raw for p in problems}
+            have = {cid for cid, _ in rows}
+            for cid in wanted:
+                entry = latest[cid]
+                if entry.get("action") != "quarantine":
+                    continue
+                if cid in have:
+                    conflicts.append(cid)
+                    continue
+                rows.append((cid, entry.get("text", "")))
+                rows_restored += 1
+            # appended rows were added in sorted order; existing rows and
+            # malformed lines keep their positions, so diffs stay readable
+            metadata.write(project.metadata, rows, raw_lines=preserve)
+
+    return {"files_restored": files_restored, "rows_restored": rows_restored,
+            "conflicts": conflicts}

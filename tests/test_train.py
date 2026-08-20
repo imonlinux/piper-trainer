@@ -105,6 +105,19 @@ def test_check_resume_ceiling_passes():
     check_resume_ceiling(None, 10)  # unreadable epoch: cannot check, proceed
 
 
+def test_max_epochs_default_agrees_with_help(capsys):
+    """One constant feeds both the resolver and the --max-epochs help text,
+    so they cannot drift (Task 1c)."""
+    from piper_trainer import cli
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["train", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    from piper_trainer.train import DEFAULT_MAX_EPOCHS
+    assert f"default {DEFAULT_MAX_EPOCHS}" in out
+    assert resolve_max_epochs(None, None, None) == DEFAULT_MAX_EPOCHS
+
+
 # ---------------------------------------------------------- latest_checkpoint
 
 def touch(path: Path, mtime: float) -> None:
