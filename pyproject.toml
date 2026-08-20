@@ -13,12 +13,13 @@ piper-trainer = "piper_trainer.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-# What the pipeline needs beyond the stdlib. The SUPPORTED path is the
-# container: piper1-gpl (with both C extensions), ffmpeg, espeak-ng, and
-# deep-filter are not pip-installable and are expected on PATH — run
+# What the pipeline imports beyond the stdlib (soundfile and numpy arrive
+# transitively and are not declared). The SUPPORTED path is the container:
+# piper1-gpl (with both C extensions), ffmpeg, espeak-ng, and deep-filter
+# are not pip-installable and are expected on PATH — run
 # `piper-trainer doctor` to see what is missing. The default install is
 # deliberately dependency-free.
-runtime = ["auditok>=0.3", "faster-whisper", "soundfile", "numpy"]
+runtime = ["auditok>=0.3", "faster-whisper"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

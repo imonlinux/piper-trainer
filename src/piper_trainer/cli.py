@@ -42,6 +42,28 @@ def _resolve_voice(proj: Project, given: str | None) -> str:
     return "en-us"
 
 
+def _resolve_tier(proj: Project, given: str | None) -> str:
+    """Effective tier: explicit > saved > medium.
+
+    Like the espeak voice, the tier must stay consistent across commands:
+    it fixes the training sample rate, so a prepare/validate/train that
+    silently disagrees with the project's tier builds or checks the wrong
+    dataset. Changing it re-runs segmentation downstream only when asked —
+    warn, because a tier switch invalidates the existing dataset.
+    """
+    saved = proj.get("tier")
+    if given:
+        if saved and saved != given:
+            print(f"! tier changed: project has {saved!r}, using {given!r}. "
+                  f"The sample rate changes with the tier — re-run prepare "
+                  f"before training.", file=sys.stderr)
+        proj.set(tier=given)
+        return given
+    if saved:
+        return saved
+    return "medium"
+
+
 def _project(args) -> Project:
     root = Path(args.project).resolve()
     name = args.name
@@ -103,7 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     # prepare ----------------------------------------------------------------
     sp = sub.add_parser("prepare", help="raw audio -> dataset/wavs")
     add_project(sp)
-    sp.add_argument("--tier", default="medium", choices=list(TIERS))
+    sp.add_argument("--tier", default=None, choices=list(TIERS),
+                    help="default: the project's saved tier, else medium")
     sp.add_argument("--channel", choices=["left", "right"],
                     help="pick one channel instead of downmixing")
     sp.add_argument("--no-denoise", action="store_true")
@@ -135,7 +158,8 @@ def main(argv: list[str] | None = None) -> int:
     # validate ---------------------------------------------------------------
     sp = sub.add_parser("validate", help="pre-flight checks")
     add_project(sp)
-    sp.add_argument("--tier", default="medium", choices=list(TIERS))
+    sp.add_argument("--tier", default=None, choices=list(TIERS),
+                    help="default: the project's saved tier, else medium")
     sp.add_argument("--batch-size", type=int)
     sp.add_argument("--espeak-voice")
     sp.add_argument("--checkpoint", type=Path)
@@ -144,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser(
         "clean", help="act on validation findings (dry run unless --apply)")
     add_project(sp)
-    sp.add_argument("--tier", default="medium", choices=list(TIERS))
+    sp.add_argument("--tier", default=None, choices=list(TIERS),
+                    help="default: the project's saved tier, else medium")
     sp.add_argument("--espeak-voice")
     sp.add_argument("--apply", action="store_true",
                     help="actually modify files; default is a dry run")
@@ -166,7 +191,8 @@ def main(argv: list[str] | None = None) -> int:
     # train ------------------------------------------------------------------
     sp = sub.add_parser("train", help="run training")
     add_project(sp)
-    sp.add_argument("--tier", default="medium", choices=list(TIERS))
+    sp.add_argument("--tier", default=None, choices=list(TIERS),
+                    help="default: the project's saved tier, else medium")
     sp.add_argument("--espeak-voice",
                     help="default: the project's saved voice, else en-us")
     sp.add_argument("--batch-size", type=int, default=32)
@@ -199,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     # export -----------------------------------------------------------------
     sp = sub.add_parser("export", help="checkpoint -> .onnx + complete .onnx.json")
     add_project(sp)
-    sp.add_argument("--tier", default="medium", choices=list(TIERS))
+    sp.add_argument("--tier", default=None, choices=list(TIERS),
+                    help="default: the project's saved tier, else medium")
     sp.add_argument("--checkpoint", type=Path, help="default: latest")
     sp.add_argument("--voice-name", help="output stem; also the 'dataset' field")
     sp.add_argument("--espeak-voice",
@@ -222,6 +249,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     proj = _project(args)
+
+    # tier behaves like the espeak voice: recorded by init, read by every
+    # later command unless explicitly overridden
+    if args.cmd in ("prepare", "validate", "clean", "train", "export"):
+        args.tier = _resolve_tier(proj, args.tier)
 
     if args.cmd == "init":
         proj.ensure()
