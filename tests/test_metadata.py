@@ -122,6 +122,17 @@ def test_read_crlf_with_escaped_delimiter(tmp_path):
     assert problems == []
 
 
+def test_read_legacy_unescaped_pipe_in_text(tmp_path):
+    """Pre-contract files never escaped the delimiter; they must still load
+    with the text intact — this is why read rejoins every field after the
+    first instead of taking fields[1] alone."""
+    p = tmp_path / "metadata.csv"
+    p.write_bytes(b"a|one | two\nb|x | y | z\n")
+    rows, problems = metadata.read(p)
+    assert rows == [("a", "one | two"), ("b", "x | y | z")]
+    assert problems == []
+
+
 def test_blank_line_reported_and_excluded(tmp_path):
     p = tmp_path / "metadata.csv"
     p.write_bytes(b"a|b\n\nc|d\n")

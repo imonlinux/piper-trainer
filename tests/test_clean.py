@@ -110,6 +110,19 @@ def test_build_plan_unspoken_text_repairs(tmp_path):
     assert plan.unresolved == []
 
 
+def test_build_plan_collects_file_level_findings_into_normalize_file(tmp_path):
+    proj = make_project(tmp_path, [("a", "x")])
+    findings = [
+        Finding("error", "crlf", "metadata.csv has CRLF line endings"),
+        Finding("error", "columns", "2 row(s) lack a transcript"),
+        Finding("error", "blank-row", "line 3 is blank"),
+    ]
+    plan = build_plan(proj, findings)
+    assert sorted(plan.normalize_file) == ["blank-row", "columns", "crlf"]
+    # file-level fixes never touch individual rows
+    assert plan.touched == set()
+
+
 # --------------------------------------------------------------------- apply
 
 def test_apply_max_fraction_guard(tmp_path):
