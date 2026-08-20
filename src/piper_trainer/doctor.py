@@ -47,17 +47,22 @@ def check() -> tuple[list[str], bool]:
         lines.append(f"· torch {torch.__version__}")
         hip = getattr(torch.version, "hip", None)
         cuda = getattr(torch.version, "cuda", None)
-        lines.append(f"· backend: {'ROCm ' + hip if hip else 'CUDA ' + str(cuda)}")
         avail = torch.cuda.is_available()
-        mark(avail, f"GPU available ({torch.cuda.device_count()} device(s))")
-        if avail:
-            lines.append(f"· device: {torch.cuda.get_device_name(0)}")
-        elif hip:
-            lines.append("  hint: ROCm needs /dev/kfd + /dev/dri passed through, "
-                         "and the container user in the 'video' group")
+        if cuda is None and hip is None:
+            # CPU-only build (the 'cpu' image variant): no GPU is expected,
+            # so its absence is informational, not a fault
+            lines.append("· CPU-only torch build — GPU check skipped")
         else:
-            lines.append("  hint: NVIDIA needs --gpus all and a driver new "
-                         "enough for this torch build")
+            lines.append(f"· backend: {'ROCm ' + hip if hip else 'CUDA ' + str(cuda)}")
+            mark(avail, f"GPU available ({torch.cuda.device_count()} device(s))")
+            if avail:
+                lines.append(f"· device: {torch.cuda.get_device_name(0)}")
+            elif hip:
+                lines.append("  hint: ROCm needs /dev/kfd + /dev/dri passed through, "
+                             "and the container user in the 'video' group")
+            else:
+                lines.append("  hint: NVIDIA needs --gpus all and a driver new "
+                             "enough for this torch build")
     except Exception as exc:  # noqa: BLE001
         mark(False, f"torch: {exc}")
 

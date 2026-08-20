@@ -99,6 +99,7 @@ def build_plan(project: Project, findings: list[Finding],
             if code in ("crlf", "columns", "blank-row"):
                 plan.normalize_file.append(code)
             elif code == "unspoken-text":
+                unrepairable = []
                 for cid in f.ids:
                     old = rows.get(cid)
                     if old is None:
@@ -108,7 +109,12 @@ def build_plan(project: Project, findings: list[Finding],
                         plan.repairs[cid] = (old, new)
                         plan.note(cid, code)
                     else:
-                        plan.unresolved.append(f)
+                        unrepairable.append(cid)
+                if unrepairable:
+                    # one finding naming exactly the clips a human must fix,
+                    # not the whole finding once per unrepairable id
+                    plan.unresolved.append(
+                        Finding(f.level, f.code, f.message, ids=unrepairable))
         elif action == "drop-row":
             for cid in f.ids:
                 plan.drop_rows.add(cid)
@@ -149,18 +155,37 @@ def describe(plan: Plan, total_rows: int) -> list[str]:
 
 
 def apply(project: Project, plan: Plan, force: bool = False) -> dict:
+    if not project.metadata.exists():
+        raise FileNotFoundError(
+            f"{project.metadata} does not exist — run transcribe first")
+
     rows, problems = metadata.read(project.metadata)
-    total = len(rows)
-    if total and len(plan.drop_rows) / total > MAX_FRACTION and not force:
+    endings_before = metadata.line_endings(project.metadata)
+
+    # Row-dropping is gated on the plan; only line-ending normalization is
+    # unconditional (that is the point of a canonical writer). A malformed
+    # row the user did not ask to fix is written back verbatim.
+    drop_cols = "columns" in plan.normalize_file
+    drop_blanks = "blank-row" in plan.normalize_file
+    gated_cols = [p for p in problems if p.code == "columns"] if drop_cols else []
+    gated_blanks = [p for p in problems if p.code == "blank-row"] if drop_blanks else []
+    malformed_rows_dropped = len(gated_cols) + len(gated_blanks)
+    preserve: dict[int, str] = {}
+    if not drop_cols:
+        preserve.update({p.line_no: p.raw for p in problems
+                         if p.code == "columns"})
+    if not drop_blanks:
+        preserve.update({p.line_no: p.raw for p in problems
+                         if p.code == "blank-row"})
+
+    total = len(rows) + malformed_rows_dropped
+    removed = len(plan.drop_rows) + malformed_rows_dropped
+    if total and removed / total > MAX_FRACTION and not force:
         raise RuntimeError(
-            f"refusing to remove {len(plan.drop_rows)}/{total} rows "
-            f"({100*len(plan.drop_rows)/total:.0f}%). That usually means a "
+            f"refusing to remove {removed}/{total} rows "
+            f"({100*removed/total:.0f}%). That usually means a "
             f"validation threshold is wrong, not the data. Use --force to "
             f"override, or narrow with --only.")
-
-    col_problems = [p for p in problems if p.code == "columns"]
-    normalized = len(col_problems) + \
-        len([p for p in problems if p.code == "blank-row"])
 
     qdir = project.dataset / "quarantine"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -180,9 +205,7 @@ def apply(project: Project, plan: Plan, force: bool = False) -> dict:
         if cid in plan.repairs:
             text = plan.repairs[cid][1]
         kept.append((cid, text))
-    # Rewriting through the canonical writer incidentally removes CRLF line
-    # endings, blank rows, and the malformed rows reported as columns Problems.
-    metadata.write(project.metadata, kept)
+    metadata.write(project.metadata, kept, raw_lines=preserve)
 
     if plan.normalize_file or plan.quarantine or plan.drop_rows or plan.repairs:
         manifest = qdir / "manifest.csv" if plan.quarantine else \
@@ -195,7 +218,7 @@ def apply(project: Project, plan: Plan, force: bool = False) -> dict:
                 w.writerow(["timestamp", "clip_id", "action", "reasons", "text"])
             row_text = dict(rows)
             # malformed rows have no usable clip id; identify by line number
-            for p in col_problems:
+            for p in gated_cols:
                 w.writerow([stamp, f"line {p.line_no}", "drop-row",
                             "columns", p.detail])
             for cid in sorted(plan.quarantine):
@@ -212,8 +235,10 @@ def apply(project: Project, plan: Plan, force: bool = False) -> dict:
                             f"{old} -> {new_t}"])
 
     return {"repaired": len(plan.repairs), "quarantined": len(moved),
-            "rows_removed": total - len(kept) + len(col_problems),
-            "rows_remaining": len(kept), "normalized": normalized}
+            "rows_removed": len(rows) - len(kept) + malformed_rows_dropped,
+            "rows_remaining": len(kept),
+            "malformed_rows_dropped": malformed_rows_dropped,
+            "line_endings_fixed": endings_before != "lf"}
 
 
 def restore(project: Project, clip_ids: list[str] | None = None) -> int:

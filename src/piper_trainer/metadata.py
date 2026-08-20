@@ -23,6 +23,7 @@ class Problem:
     line_no: int          # 1-based
     code: str             # "blank-row" | "columns"
     detail: str
+    raw: str = ""         # the line verbatim, sans terminator; for write-back
 
 
 def read(path: Path) -> tuple[list[tuple[str, str]], list[Problem]]:
@@ -38,25 +39,40 @@ def read(path: Path) -> tuple[list[tuple[str, str]], list[Problem]]:
     with path.open(newline="") as fh:
         for n, line in enumerate(fh, start=1):
             if not line.strip():
-                problems.append(Problem(n, "blank-row", f"line {n} is blank"))
+                problems.append(Problem(n, "blank-row", f"line {n} is blank",
+                                        raw=line.rstrip("\r\n")))
                 continue
             fields = next(csv.reader([line], **_DIALECT))
             if len(fields) < 2 or not fields[1].strip():
                 problems.append(Problem(n, "columns",
-                                        f"line {n} lacks a transcript"))
+                                        f"line {n} lacks a transcript",
+                                        raw=line.rstrip("\r\n")))
                 continue
             rows.append((fields[0], DELIMITER.join(fields[1:])))
     return rows, problems
 
 
-def write(path: Path, rows: list[tuple[str, str]]) -> None:
+def write(path: Path, rows: list[tuple[str, str]],
+          raw_lines: dict[int, str] | None = None) -> None:
     """Write metadata.csv with LF endings and correct escaping.
 
     MUST open with newline="" and pass lineterminator="\\n".
+
+    raw_lines maps a 1-based line number to a verbatim line (sans terminator)
+    to preserve at that position — used by clean to keep malformed rows it
+    was not asked to fix. Rows fill the remaining positions in order. A raw
+    line keeps its bytes except the terminator: line endings are always LF.
     """
+    raw_lines = raw_lines or {}
     path.parent.mkdir(parents=True, exist_ok=True)
+    pending = list(rows)
     with path.open("w", newline="") as fh:
-        csv.writer(fh, **_DIALECT).writerows(rows)
+        wtr = csv.writer(fh, **_DIALECT)
+        for n in range(1, len(rows) + len(raw_lines) + 1):
+            if n in raw_lines:
+                fh.write(raw_lines[n] + LINETERMINATOR)
+            else:
+                wtr.writerow(pending.pop(0))
 
 
 def line_endings(path: Path) -> str:

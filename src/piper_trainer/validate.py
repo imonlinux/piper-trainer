@@ -77,7 +77,8 @@ class Finding:
 
 def validate_dataset(project: Project, tier: str = "medium",
                      batch_size: int | None = None,
-                     espeak_voice: str | None = None) -> list[Finding]:
+                     espeak_voice: str | None = None,
+                     validation_split: float = 0.02) -> list[Finding]:
     f: list[Finding] = []
 
     if not project.metadata.exists():
@@ -180,19 +181,10 @@ def validate_dataset(project: Project, tier: str = "medium",
                          f"e.g. {flagged[0][0]}: {flagged[0][1][:60]!r}",
                          ids=[i for i, _ in flagged]))
 
-    # chars-per-second outliers: truncated audio, hallucinations, mispairs
-    cps = []
-    for i, t in rows:
-        wav = project.wavs / f"{i}.wav"
-        if not wav.exists():
-            continue
-        try:
-            with wave.open(str(wav)) as w:
-                d = w.getnframes() / w.getframerate()
-            if d:
-                cps.append((i, len(t) / d))
-        except Exception:  # noqa: BLE001
-            pass
+    # chars-per-second outliers: truncated audio, hallucinations, mispairs.
+    # per_id_dur was collected in the audio-properties pass above; reuse it.
+    cps = [(i, len(t) / d) for i, t in rows
+           if (d := per_id_dur.get(i))]
     if len(cps) > 4:
         vals = [c for _, c in cps]
         mu, sd = statistics.mean(vals), statistics.pstdev(vals) or 1.0
@@ -206,12 +198,20 @@ def validate_dataset(project: Project, tier: str = "medium",
 
     # --- batch size ----------------------------------------------------------
     if batch_size:
-        train_split = int(len(rows) * 0.98)
+        train_split = int(len(rows) * (1 - validation_split))
         if batch_size >= train_split:
             f.append(Finding("error", "batch-size",
                              f"batch_size {batch_size} >= train split "
                              f"{train_split}: you get one batch per epoch. "
                              f"Use {max(2, train_split // 3)} or lower"))
+
+    # --- validation split ----------------------------------------------------
+    if 0 < validation_split and rows and round(len(rows) * validation_split) < 1:
+        f.append(Finding("warn", "validation-split",
+                         f"validation_split {validation_split} yields 0 "
+                         f"validation clips for {len(rows)} rows — Lightning "
+                         f"will skip validation entirely. Use "
+                         f"--validation-split 0 or a larger split"))
 
     # --- espeak voice --------------------------------------------------------
     if espeak_voice:
@@ -219,13 +219,20 @@ def validate_dataset(project: Project, tier: str = "medium",
             voices = subprocess.run(["espeak-ng", "--voices"],
                                     capture_output=True, text=True,
                                     check=True).stdout
-            names = {ln.split()[1] for ln in voices.splitlines()[1:] if ln.split()}
+        except FileNotFoundError:
+            f.append(Finding("error", "espeak-missing",
+                             "espeak-ng binary not found on PATH — "
+                             "phonemization (and training) will fail"))
+        except subprocess.CalledProcessError as exc:
+            f.append(Finding("error", "espeak-missing",
+                             f"espeak-ng --voices failed: {exc}"))
+        else:
+            names = {ln.split()[1] for ln in voices.splitlines()[1:]
+                     if len(ln.split()) > 1}
             if espeak_voice not in names:
                 f.append(Finding("error", "espeak-voice",
                                  f"'{espeak_voice}' is not an espeak voice. "
                                  f"Run: espeak-ng --voices"))
-        except Exception:  # noqa: BLE001
-            pass
 
     return f
 

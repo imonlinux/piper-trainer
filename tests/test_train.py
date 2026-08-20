@@ -1,10 +1,13 @@
-"""Tests for train: build_command and latest_checkpoint."""
+"""Tests for train: build_command, epoch resolution, latest_checkpoint."""
 import os
 import time
 from pathlib import Path
 
+import pytest
+
 from piper_trainer.config import Project, TIERS
-from piper_trainer.train import build_command, latest_checkpoint
+from piper_trainer.train import (build_command, check_resume_ceiling,
+                                 latest_checkpoint, resolve_max_epochs)
 
 
 def make_project(tmp_path: Path) -> Project:
@@ -68,6 +71,38 @@ def test_data_paths_use_project_dirs(tmp_path):
     assert flag_value(cmd, "--data.csv_path") == str(proj.metadata)
     assert flag_value(cmd, "--data.audio_dir") == str(proj.wavs)
     assert flag_value(cmd, "--data.cache_dir") == str(proj.cache("medium"))
+
+
+def test_build_command_uses_voice_stem(tmp_path):
+    """voice_name is {name}-{tier} — no language prefix (Task 5)."""
+    cmd = build_command(make_project(tmp_path), tier="medium",
+                        espeak_voice="en-gb")
+    assert flag_value(cmd, "--data.voice_name") == "marvin-medium"
+
+
+# ------------------------------------------------------- epoch resolution
+
+def test_resolve_max_epochs():
+    assert resolve_max_epochs(9999, 100, None) == 10099
+    assert resolve_max_epochs(10, None, 500) == 500
+    assert resolve_max_epochs(None, None, None) == 4000  # default
+
+
+def test_resolve_max_epochs_needs_readable_epoch():
+    with pytest.raises(RuntimeError, match="readable epoch"):
+        resolve_max_epochs(None, 100, None)
+
+
+def test_check_resume_ceiling_refuses_and_names_numbers():
+    with pytest.raises(RuntimeError, match="epoch 9999"):
+        check_resume_ceiling(9999, 4000)
+    with pytest.raises(RuntimeError, match="max_epochs is 10"):
+        check_resume_ceiling(10, 10)  # equal is already a no-op
+
+
+def test_check_resume_ceiling_passes():
+    check_resume_ceiling(9, 10)
+    check_resume_ceiling(None, 10)  # unreadable epoch: cannot check, proceed
 
 
 # ---------------------------------------------------------- latest_checkpoint

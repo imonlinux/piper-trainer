@@ -110,6 +110,19 @@ def test_build_plan_unspoken_text_repairs(tmp_path):
     assert plan.unresolved == []
 
 
+def test_build_plan_unresolved_names_only_unrepairable_ids(tmp_path):
+    """A finding covering several ids where only some repair: ONE new
+    finding carrying exactly the unrepairable ids (Task 6)."""
+    proj = make_project(tmp_path, [("a", "room 7"), ("b", "year 1984"),
+                                   ("c", "gate 42 open")])
+    findings = [Finding("error", "unspoken-text", "digits in 3 clips",
+                        ids=["a", "b", "c"])]
+    plan = build_plan(proj, findings)
+    assert set(plan.repairs) == {"a"}
+    assert len(plan.unresolved) == 1
+    assert plan.unresolved[0].ids == ["b", "c"]
+
+
 def test_build_plan_collects_file_level_findings_into_normalize_file(tmp_path):
     proj = make_project(tmp_path, [("a", "x")])
     findings = [
@@ -165,18 +178,96 @@ def test_apply_moves_quarantined_files_and_rewrites_metadata(tmp_path):
 def test_apply_drops_malformed_rows_and_counts_normalized(tmp_path):
     proj = Project(root=tmp_path, name="t")
     proj.ensure()
-    proj.metadata.write_text("a|ok\nbadline\nb|\nc|fine\n", encoding="utf-8")
+    content = "".join(f"c{i}|text {i}\n" for i in range(10)) + "badline\nb|\n"
+    proj.metadata.write_text(content, encoding="utf-8")
     plan = Plan()
     plan.normalize_file = ["columns"]
 
     stats = apply(proj, plan)
 
-    assert stats["normalized"] == 2  # badline + b|
+    assert stats["malformed_rows_dropped"] == 2  # badline + b|
+    assert stats["line_endings_fixed"] is False  # file was already LF
     rows_after, problems = metadata.read(proj.metadata)
-    assert rows_after == [("a", "ok"), ("c", "fine")]
+    assert rows_after == [(f"c{i}", f"text {i}") for i in range(10)]
     assert problems == []
     log = (proj.dataset / "clean-log.csv").read_text()
     assert "drop-row" in log and "columns" in log
+
+
+def test_apply_preserves_malformed_rows_not_in_plan(tmp_path):
+    """--only that excludes columns must not drop malformed rows."""
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    content = ("a|ok\nbadline,with,commas\nb|\nc|fine\n"
+               "d|five\ne|six\n")
+    proj.metadata.write_text(content, encoding="utf-8")
+    plan = Plan()  # normalize_file empty: user narrowed with --only elsewhere
+    plan.drop_rows = {"a"}
+    plan.reasons = {"a": ["missing-wav"]}
+
+    stats = apply(proj, plan)
+
+    assert stats["malformed_rows_dropped"] == 0
+    # malformed lines survive verbatim; kept rows fill the other positions
+    assert proj.metadata.read_text() == \
+        "c|fine\nbadline,with,commas\nb|\nd|five\ne|six\n"
+    rows, problems = metadata.read(proj.metadata)
+    assert rows == [("c", "fine"), ("d", "five"), ("e", "six")]
+    assert len(problems) == 2
+
+
+def test_apply_gates_blank_rows_too_and_fixes_endings(tmp_path):
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    proj.metadata.write_bytes(
+        b"a|ok\r\n\r\nb|\nc|fine\r\nd|four\r\ne|five\r\nf|six\r\n")
+    plan = Plan()
+    plan.normalize_file = ["crlf", "blank-row"]  # columns NOT gated in
+
+    stats = apply(proj, plan)
+
+    assert stats["malformed_rows_dropped"] == 1  # the blank line only
+    assert stats["line_endings_fixed"] is True
+    data = proj.metadata.read_bytes()
+    assert b"\r" not in data
+    assert data == b"a|ok\nc|fine\nb|\nd|four\ne|five\nf|six\n"  # 'b|' kept
+
+
+def test_apply_preserves_blank_lines_not_in_plan(tmp_path):
+    """A blank line the user did not ask to fix survives the rewrite too."""
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    proj.metadata.write_bytes(b"a|ok\r\n\r\nb|\nc|fine\r\n")
+    plan = Plan()
+    plan.normalize_file = ["crlf"]  # blank-row NOT gated
+
+    stats = apply(proj, plan)
+
+    assert stats["malformed_rows_dropped"] == 0
+    assert stats["line_endings_fixed"] is True
+    assert proj.metadata.read_bytes() == b"a|ok\n\nb|\nc|fine\n"
+
+
+def test_apply_max_fraction_counts_gated_malformed(tmp_path):
+    """6 good rows + 5 malformed, columns gated in: 0 + 5 over 6 + 5 > 0.34."""
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    content = "".join(f"c{i}|text {i}\n" for i in range(6)) + "bad\n" * 5
+    proj.metadata.write_text(content, encoding="utf-8")
+    plan = Plan()
+    plan.normalize_file = ["columns"]
+    with pytest.raises(RuntimeError, match="refusing to remove 5/11"):
+        apply(proj, plan)
+    stats = apply(proj, plan, force=True)
+    assert stats["malformed_rows_dropped"] == 5
+    assert stats["rows_remaining"] == 6
+
+
+def test_apply_missing_metadata_raises(tmp_path):
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        apply(proj, Plan())
 
 
 def test_apply_repairs_text(tmp_path):

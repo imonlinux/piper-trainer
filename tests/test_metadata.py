@@ -167,3 +167,31 @@ def test_trailing_newline_is_not_a_blank_row(tmp_path):
     rows, problems = metadata.read(p)
     assert rows == [("a", "b")]
     assert problems == []
+
+
+def test_problem_raw_round_trips_verbatim(tmp_path):
+    """Raw lines retained on Problems survive a write unchanged (Task 1b)."""
+    p = tmp_path / "metadata.csv"
+    p.write_bytes(b"good|row\nhas,commas,no,pipes\n\nweird\tchars\nlast|row\n")
+    rows, problems = metadata.read(p)
+    assert [r[0] for r in rows] == ["good", "last"]
+    by_line = {pr.line_no: pr for pr in problems}
+    assert by_line[2].raw == "has,commas,no,pipes"
+    assert by_line[3].raw == ""  # the blank line
+    assert by_line[4].raw == "weird\tchars"
+
+    keep = {pr.line_no: pr.raw for pr in problems}
+    metadata.write(p, rows, raw_lines=keep)
+    assert p.read_bytes() == \
+        b"good|row\nhas,commas,no,pipes\n\nweird\tchars\nlast|row\n"
+
+
+def test_raw_lines_get_lf_terminator(tmp_path):
+    """A preserved raw line from a CRLF file is written back with LF —
+    line-ending normalization stays unconditional."""
+    p = tmp_path / "metadata.csv"
+    p.write_bytes(b"a|ok\r\nbad\r\n")
+    rows, problems = metadata.read(p)
+    assert problems[0].raw == "bad"  # terminator stripped on capture
+    metadata.write(p, rows, raw_lines={2: problems[0].raw})
+    assert p.read_bytes() == b"a|ok\nbad\n"

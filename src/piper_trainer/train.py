@@ -5,7 +5,49 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import Project, TIERS
+from .config import Project, TIERS, voice_stem
+
+
+def resolve_max_epochs(checkpoint_epoch: int | None,
+                       add_epochs: int | None,
+                       max_epochs: int | None) -> int:
+    """Effective --trainer.max_epochs from --max-epochs / --add-epochs.
+
+    --add-epochs is relative: max_epochs = checkpoint_epoch + N. Pure so the
+    CLI and the future API layer share the arithmetic (design doc §1.4).
+    """
+    if max_epochs is None:
+        max_epochs = 4000
+    if add_epochs is None:
+        return max_epochs
+    if checkpoint_epoch is None:
+        raise RuntimeError(
+            "--add-epochs needs a checkpoint with a readable epoch")
+    return checkpoint_epoch + add_epochs
+
+
+def check_resume_ceiling(checkpoint_epoch: int | None,
+                         max_epochs: int) -> None:
+    """Refuse a resume that would exit immediately: --ckpt_path restores the
+    epoch counter, and max_epochs is an absolute ceiling."""
+    if checkpoint_epoch is not None and checkpoint_epoch >= max_epochs:
+        raise RuntimeError(
+            f"checkpoint is at epoch {checkpoint_epoch} and max_epochs is "
+            f"{max_epochs} — training would exit without doing anything. "
+            f"Use --max-epochs {checkpoint_epoch + 1} or higher, or "
+            f"--add-epochs N to train N more.")
+
+
+def checkpoint_epoch(ckpt: Path) -> int | None:
+    """Epoch recorded in a Lightning checkpoint, or None if unreadable."""
+    import torch
+
+    try:
+        data = torch.load(str(ckpt), map_location="cpu", weights_only=False)
+    except Exception:  # noqa: BLE001
+        return None
+    epoch = data.get("epoch") if isinstance(data, dict) else None
+    return int(epoch) if epoch is not None else None
 
 
 def build_command(
@@ -26,8 +68,7 @@ def build_command(
     if tier not in TIERS:
         raise ValueError(f"unknown tier {tier!r}")
     spec = TIERS[tier]
-    lang_code = espeak_voice.split("-")[0]
-    name = voice_name or f"{lang_code}-{project.name}-{tier}"
+    name = voice_name or voice_stem(project.name, tier, espeak_voice)
 
     cmd = [
         sys.executable, "-m", "piper.train", "fit",

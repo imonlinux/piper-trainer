@@ -80,6 +80,15 @@ def language_block(espeak_voice: str) -> dict:
             "name_native": fam, "name_english": fam, "country_english": ""}
 
 
+def voice_stem(name: str, tier: str, espeak_voice: str | None = None) -> str:
+    """One naming convention for training voice_name and export stem alike:
+    `{name}-{tier}`. No language prefix — the language is recorded in the
+    config's `language` block, and this stem matches the deployed filename.
+    espeak_voice is accepted for call-site symmetry and currently unused.
+    """
+    return f"{name}-{tier}"
+
+
 @dataclass
 class Project:
     """On-disk layout for one voice. Deliberately human-readable and

@@ -66,6 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("voices", help="list espeak voices")
     sp.add_argument("--prefix", default="")
 
+    # sources ----------------------------------------------------------------
+    sp = sub.add_parser("sources", help="list source recordings in raw/")
+    add_project(sp)
+
     # init -------------------------------------------------------------------
     sp = sub.add_parser("init", help="create the project layout")
     add_project(sp)
@@ -87,6 +91,9 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--max-silence", type=float, default=0.4)
     sp.add_argument("--pad", type=float, default=0.15,
                     help="leading/trailing silence kept per clip")
+    sp.add_argument("--force", action="store_true",
+                    help="re-run stages even when inputs and parameters "
+                         "are unchanged")
 
     # transcribe -------------------------------------------------------------
     sp = sub.add_parser("transcribe", help="Whisper -> metadata.csv + audit.csv")
@@ -94,6 +101,12 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--model", default=None)
     sp.add_argument("--language", default="en")
     sp.add_argument("--device", default="cpu")
+    sp.add_argument("--retranscribe", action="store_true",
+                    help="transcribe every clip, ignoring existing "
+                         "metadata.csv rows")
+    sp.add_argument("--only-missing", action="store_true",
+                    help="transcribe only clips missing from metadata.csv "
+                         "(the default; stated explicitly for the API layer)")
 
     # validate ---------------------------------------------------------------
     sp = sub.add_parser("validate", help="pre-flight checks")
@@ -127,7 +140,17 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--espeak-voice",
                     help="default: the project's saved voice, else en-us")
     sp.add_argument("--batch-size", type=int, default=32)
-    sp.add_argument("--max-epochs", type=int, default=4000)
+    # default None so an explicit --max-epochs can be told apart from the
+    # default when --add-epochs is in play (they are mutually exclusive)
+    sp.add_argument("--max-epochs", type=int, default=None,
+                    help="absolute epoch ceiling (default 4000); "
+                         "mutually exclusive with --add-epochs")
+    sp.add_argument("--add-epochs", type=int, default=None,
+                    help="train N more epochs on top of the resume "
+                         "checkpoint's epoch; requires --resume")
+    sp.add_argument("--validation-split", type=float, default=None,
+                    help="fraction of clips held out for validation "
+                         "(default 0.02; use 0 to disable)")
     sp.add_argument("--num-workers", type=int, default=8)
     sp.add_argument("--warmstart", type=Path,
                     help="fine-tune from another voice (weights only)")
@@ -177,10 +200,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"drop source recordings in {proj.raw}")
         return 0
 
+    if args.cmd == "sources":
+        rows = prepare.sources(proj)
+        if not rows:
+            print(f"no source recordings in {proj.raw}")
+            return 0
+        fmt = "{:<30} {:<6} {:>7} {:>3} {:>9} {:>9}"
+        print(fmt.format("name", "codec", "rate", "ch", "dur(s)", "size"))
+        for r in rows:
+            print(fmt.format(r["name"][:30], r["codec"] or "?",
+                             r["sample_rate"] or "?", r["channels"] or "?",
+                             r["duration"] or "?",
+                             f"{r['size'] / 1e6:.1f}MB"))
+        return 0
+
     if args.cmd == "prepare":
         stats = prepare.run_all(
             proj, tier=args.tier, channel=args.channel,
-            denoise_enabled=not args.no_denoise,
+            denoise_enabled=not args.no_denoise, force=args.force,
             energy_threshold=args.energy_threshold,
             min_dur=args.min_dur, max_dur=args.max_dur,
             max_silence=args.max_silence,
@@ -194,10 +231,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "transcribe":
+        if args.retranscribe and args.only_missing:
+            print("--retranscribe and --only-missing are mutually exclusive",
+                  file=sys.stderr)
+            return 2
         stats = transcribe.transcribe(proj, model_size=args.model,
-                                      language=args.language, device=args.device)
-        print(f"{stats['clips']} clips, "
-              f"{stats['total_seconds']/60:.1f} min -> {proj.metadata}")
+                                      language=args.language,
+                                      device=args.device,
+                                      retranscribe=args.retranscribe)
+        print(f"{stats['transcribed']} transcribed, {stats['skipped']} "
+              f"skipped, {stats['total_seconds']/60:.1f} min -> "
+              f"{proj.metadata}")
         print(f"review {proj.audit} before training")
         return 0
 
@@ -229,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         try:
             stats = clean_mod.apply(proj, plan, force=args.force)
-        except RuntimeError as exc:
+        except (RuntimeError, FileNotFoundError) as exc:
             print(f"\n{exc}", file=sys.stderr)
             return 1
         print("\n" + ", ".join(f"{k}: {v}" for k, v in stats.items()))
@@ -248,10 +292,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "train":
         args.espeak_voice = _resolve_voice(proj, args.espeak_voice)
+        validation_split = args.validation_split \
+            if args.validation_split is not None else 0.02
+        if args.add_epochs is not None and args.max_epochs is not None:
+            print("--add-epochs and --max-epochs are mutually exclusive",
+                  file=sys.stderr)
+            return 2
+        if args.add_epochs is not None and args.resume is None:
+            print("--add-epochs requires --resume (nothing to add to "
+                  "otherwise)", file=sys.stderr)
+            return 2
         if not args.skip_validate:
             findings = validate_dataset(proj, tier=args.tier,
                                         batch_size=args.batch_size,
-                                        espeak_voice=args.espeak_voice)
+                                        espeak_voice=args.espeak_voice,
+                                        validation_split=validation_split)
             for f in findings:
                 print(f)
             if any(f.level == "error" for f in findings):
@@ -259,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
                       file=sys.stderr)
                 return 1
         resume = args.resume
+        ckpt_epoch = None
         if resume is not None:
             if str(resume) == "auto":
                 resume = train_mod.latest_checkpoint(proj, args.tier)
@@ -270,11 +326,29 @@ def main(argv: list[str] | None = None) -> int:
                 if not resume.exists():
                     print(f"checkpoint not found: {resume}", file=sys.stderr)
                     return 1
-            print(f"resuming from {resume}")
+            ckpt_epoch = train_mod.checkpoint_epoch(resume)
+            where = f" (epoch {ckpt_epoch})" if ckpt_epoch is not None else ""
+            print(f"resuming from {resume}{where}")
+        try:
+            max_epochs = train_mod.resolve_max_epochs(
+                ckpt_epoch, args.add_epochs, args.max_epochs)
+            if resume is not None:
+                train_mod.check_resume_ceiling(ckpt_epoch, max_epochs)
+        except RuntimeError as exc:
+            print(f"\n{exc}", file=sys.stderr)
+            return 1
+        # target_epochs: fresh runs (re)set it for the tier; a resume never
+        # overwrites it (design doc §1.4 uses it as the progress denominator)
+        if not args.dry_run:
+            targets = proj.get("target_epochs") or {}
+            if resume is None or args.tier not in targets:
+                targets[args.tier] = max_epochs
+                proj.set(target_epochs=targets)
         cmd = train_mod.build_command(
             proj, tier=args.tier, espeak_voice=args.espeak_voice,
-            batch_size=args.batch_size, max_epochs=args.max_epochs,
+            batch_size=args.batch_size, max_epochs=max_epochs,
             num_workers=args.num_workers,
+            validation_split=validation_split,
             warmstart=args.warmstart, resume=resume,
             accelerator=args.accelerator, precision=args.precision)
         if args.dry_run:

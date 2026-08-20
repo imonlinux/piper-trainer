@@ -1,6 +1,7 @@
 """Tests for validate: BAD_TEXT regex, validate_dataset, Finding.action."""
 import math
 import struct
+import types
 import wave
 from pathlib import Path
 
@@ -146,3 +147,45 @@ def test_actions_table_covers_known_codes():
                  "missing-wav", "orphan-wav", "unreadable", "short-clips",
                  "long-clips", "cps-outliers", "sample-rate", "channels"):
         assert code in ACTIONS
+
+
+# ------------------------------------------------------- 7c/7d additions
+
+def test_validation_split_warns_at_zero_clip_boundary(tmp_path):
+    """round(n * split) < 1 warns — unless the split is deliberately 0."""
+    proj25 = make_project(tmp_path, [(f"c{i}", "text") for i in range(25)])
+    codes = {f.code for f in validate_dataset(proj25, tier="medium",
+                                              validation_split=0.02)}
+    assert "validation-split" in codes  # round(0.5) == 0
+
+    proj50 = make_project(tmp_path / "b", [(f"c{i}", "text") for i in range(50)])
+    codes = {f.code for f in validate_dataset(proj50, tier="medium",
+                                              validation_split=0.02)}
+    assert "validation-split" not in codes  # round(1.0) == 1
+
+    codes = {f.code for f in validate_dataset(proj25, tier="medium",
+                                              validation_split=0.0)}
+    assert "validation-split" not in codes  # deliberately off
+
+
+def test_espeak_missing_finding_when_binary_absent(tmp_path, monkeypatch):
+    proj = make_project(tmp_path, [("a", "ok")])
+
+    def boom(*a, **k):
+        raise FileNotFoundError("espeak-ng")
+
+    monkeypatch.setattr("piper_trainer.validate.subprocess.run", boom)
+    findings = validate_dataset(proj, tier="medium", espeak_voice="en-us")
+    codes = {f.code for f in findings}
+    assert "espeak-missing" in codes
+    assert "espeak-voice" not in codes  # check skipped, not silently passed
+
+
+def test_espeak_voice_check_runs_when_binary_present(tmp_path, monkeypatch):
+    proj = make_project(tmp_path, [("a", "ok")])
+    monkeypatch.setattr(
+        "piper_trainer.validate.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(
+            stdout=" 5 en-us +21/M 130 en_US\n 5 de +21/M 130 de_DE\n"))
+    findings = validate_dataset(proj, tier="medium", espeak_voice="en-gb-x-rp")
+    assert "espeak-voice" in {f.code for f in findings}

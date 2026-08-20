@@ -1,4 +1,9 @@
-"""Whisper transcription -> metadata.csv + audit.csv."""
+"""Whisper transcription -> metadata.csv + audit.csv.
+
+Resumable: clips that already have a row in metadata.csv are skipped and
+their audit rows carried forward, so an interrupted run costs only the clips
+it had not reached. --retranscribe forces a full pass.
+"""
 from __future__ import annotations
 
 import csv
@@ -15,9 +20,23 @@ def duration(path: Path) -> float:
         return w.getnframes() / w.getframerate()
 
 
+def _load_audit(path: Path) -> dict[str, list[str]]:
+    rows: dict[str, list[str]] = {}
+    if not path.exists():
+        return rows
+    with path.open(newline="") as fh:
+        reader = csv.reader(fh)
+        next(reader, None)  # header
+        for row in reader:
+            if len(row) >= 5 and row[0]:
+                rows[row[0]] = row
+    return rows
+
+
 def transcribe(project: Project, model_size: str | None = None,
                language: str = "en", device: str = "cpu",
-               compute_type: str = "int8") -> dict:
+               compute_type: str = "int8",
+               retranscribe: bool = False) -> dict:
     """Use a LARGE model: this is a batch job with no latency requirement, and
     small-model errors bury you in false audit flags.
 
@@ -28,23 +47,46 @@ def transcribe(project: Project, model_size: str | None = None,
     vad_filter=False because segmentation already happened; Whisper's own VAD
     can trim audio it thinks is silence and desync transcript from clip.
     """
-    from faster_whisper import WhisperModel
+    wavs = sorted(project.wavs.glob("*.wav"))
+    existing: dict[str, str] = {}
+    if not retranscribe and project.metadata.exists():
+        existing = dict(metadata.read(project.metadata)[0])
+    audit_old = _load_audit(project.audit)
 
-    model_size = model_size or os.environ.get(
-        "PIPER_TRAINER_WHISPER_MODEL", "large-v3")
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    model = None
+    if not retranscribe:
+        todo = [w for w in wavs if w.stem not in existing]
+    else:
+        todo = list(wavs)
+    if todo:
+        from faster_whisper import WhisperModel
+        model_size = model_size or os.environ.get(
+            "PIPER_TRAINER_WHISPER_MODEL", "large-v3")
+        model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
-    rows, audit = [], []
-    for wav in sorted(project.wavs.glob("*.wav")):
-        segments, info = model.transcribe(
-            str(wav), language=language, beam_size=5,
-            vad_filter=False, condition_on_previous_text=False)
-        text = " ".join(s.text.strip() for s in segments).strip()
+    rows, audit, transcribed, skipped, total_seconds = [], [], 0, 0, 0.0
+    for wav in wavs:
         dur = duration(wav)
+        total_seconds += dur
+        if not retranscribe and wav.stem in existing:
+            text = existing[wav.stem]
+            skipped += 1
+            if wav.name in audit_old:
+                # carry the original audit row forward verbatim
+                audit.append(audit_old[wav.name])
+                rows.append([wav.stem, text])
+                continue
+            info = None
+        else:
+            segments, info = model.transcribe(
+                str(wav), language=language, beam_size=5,
+                vad_filter=False, condition_on_previous_text=False)
+            text = " ".join(s.text.strip() for s in segments).strip()
+            transcribed += 1
         cps = len(text) / dur if dur else 0.0
+        prob = f"{info.language_probability:.3f}" if info is not None else ""
         rows.append([wav.stem, text])
-        audit.append([wav.name, f"{dur:.2f}", f"{cps:.1f}",
-                      f"{info.language_probability:.3f}", text])
+        audit.append([wav.name, f"{dur:.2f}", f"{cps:.1f}", prob, text])
 
     metadata.write(project.metadata, rows)
     with project.audit.open("w", newline="") as f:
@@ -52,5 +94,5 @@ def transcribe(project: Project, model_size: str | None = None,
         w.writerow(["file", "duration", "chars_per_sec", "lang_prob", "text"])
         w.writerows(audit)
 
-    return {"clips": len(rows),
-            "total_seconds": sum(float(r[1]) for r in audit)}
+    return {"clips": len(rows), "transcribed": transcribed, "skipped": skipped,
+            "total_seconds": total_seconds}

@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import Project, TIERS, language_block
+from .config import Project, TIERS, language_block, voice_stem
 
 
 def export(project: Project, tier: str, checkpoint: Path,
@@ -26,7 +26,7 @@ def export(project: Project, tier: str, checkpoint: Path,
            length_scale: float | None = None,
            noise_scale: float | None = None,
            noise_w: float | None = None) -> tuple[Path, Path]:
-    stem = voice_name or f"{project.name}-{tier}"
+    stem = voice_name or voice_stem(project.name, tier, espeak_voice)
     project.out.mkdir(parents=True, exist_ok=True)
     onnx_path = project.out / f"{stem}.onnx"
     json_path = project.out / f"{stem}.onnx.json"
