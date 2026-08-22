@@ -112,6 +112,8 @@ $R export   /workspace/recordings --voice-name marvin-medium --length-scale 1.25
 
 `--espeak-voice`, `--tier`, and `--name` appear only on `init`: all three are recorded in `project.json` and every later command reads them. `--name` is the voice name used in the config, checkpoint, and export filenames — the project directory can be called anything. Pass any of them again only to change them, which prints a warning.
 
+**Do not skip `init`.** A project without `init` has no `project.json`, so there is no saved espeak voice — and every later command then **falls back to `en-us`**, printing a one-line warning to stderr. That is not a labeling error at export time: `train` phonemizes with `en-us` too, so the model itself is trained with the wrong accent and the defect only reveals itself when you listen to the result. If you already trained such a project, re-run `train` with an explicit `--espeak-voice` (which records it in `project.json` for future runs) after deleting the tier's `cache-*/` and `runs-*/` directories — both are phonemized with the old voice and cannot be reused.
+
 Then copy `out/marvin-medium.onnx` and `out/marvin-medium.onnx.json` to your wyoming-piper data directory, restart it, and reload the Wyoming integration.
 
 ### Useful flags
