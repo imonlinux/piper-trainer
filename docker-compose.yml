@@ -29,6 +29,8 @@ services:
       context: .
       args:
         TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
+        TORCH_VERSION: "2.6.0"
+        PIPER_REF: v1.7.0
     image: piper-trainer:cuda
     deploy:
       resources:
@@ -45,6 +47,10 @@ services:
       context: .
       args:
         TORCH_INDEX_URL: https://rocm.nightlies.amd.com/v2/gfx1151/
+        # nightly index: the verified gfx1151 build (see README). Bump
+        # deliberately — a plain `compose build` must not float it.
+        TORCH_VERSION: "2.10.0"
+        PIPER_REF: v1.7.0
     image: piper-trainer:rocm
     devices:
       - /dev/kfd
@@ -53,7 +59,7 @@ services:
       - "${VIDEO_GID:-39}"
       - "${RENDER_GID:-105}"
     security_opt:
-      - seccomp:unconfined
+      - seccomp=unconfined
 
   # CPU-only: works anywhere, slow but a valid fallback
   trainer-cpu:
@@ -63,4 +69,6 @@ services:
       context: .
       args:
         TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+        TORCH_VERSION: "2.6.0"
+        PIPER_REF: v1.7.0
     image: piper-trainer:cpu

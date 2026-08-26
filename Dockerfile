@@ -16,8 +16,13 @@
 FROM python:3.12-slim-bookworm
 
 # ---------------------------------------------------------------- build args
+# Pinned by default so a --no-cache rebuild reproduces the same stack:
+#   PIPER_REF      v1.7.0 tag (was: main, which floated across releases)
+#   TORCH_VERSION  2.6.0, the version verified on this stack
+# Override with --build-arg only when you deliberately want to move.
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
-ARG PIPER_REF=main
+ARG TORCH_VERSION=2.6.0
+ARG PIPER_REF=v1.7.0
 ARG DEEPFILTER_VERSION=0.5.6
 ARG WHISPER_MODEL=large-v3
 
@@ -55,12 +60,25 @@ RUN curl -fsSL -o /usr/local/bin/deep-filter \
 # --------------------------------------------------------------------- torch
 # Installed first and in its own layer: it is the largest and least volatile
 # dependency, and the index URL is what distinguishes the CUDA/ROCm variants.
-RUN python3 -m pip install --index-url "${TORCH_INDEX_URL}" torch torchaudio
+# Exact pin first, prefix match second (the pytorch indexes use local
+# version labels like 2.6.0+cu124). If neither resolves the build fails
+# HERE rather than floating; the stamp + smoke test below re-assert it.
+# NOTE: the pin is index-specific — the ROCm nightly index carries
+# different version strings, so a ROCm build passes its own
+# --build-arg TORCH_VERSION=<nightly version>.
+RUN python3 -m pip install --index-url "${TORCH_INDEX_URL}" \
+        "torch==${TORCH_VERSION}" "torchaudio==${TORCH_VERSION}" \
+    || python3 -m pip install --index-url "${TORCH_INDEX_URL}" \
+        "torch==${TORCH_VERSION}.*" "torchaudio==${TORCH_VERSION}.*" 
 
-# ----------------------------------------------------------------- piper1-gpl
+# --------------------------------------------------------------- piper1-gpl
+# PIPER_REF is pinned (default v1.7.0) so a --no-cache rebuild reproduces
+# the same upstream code; build with --build-arg PIPER_REF=<sha|tag> to
+# move it deliberately.
 WORKDIR /opt
 RUN git clone --depth 1 --branch "${PIPER_REF}" \
-      https://github.com/OHF-Voice/piper1-gpl.git /opt/piper1-gpl
+      https://github.com/OHF-Voice/piper1-gpl.git /opt/piper1-gpl \
+    && cd /opt/piper1-gpl && git rev-parse HEAD > /tmp/piper_sha
 
 WORKDIR /opt/piper1-gpl
 
@@ -122,6 +140,33 @@ RUN python3 -m pip install \
 COPY pyproject.toml /opt/piper-trainer/pyproject.toml
 COPY src /opt/piper-trainer/src
 RUN python3 -m pip install -e /opt/piper-trainer --no-deps
+
+# ------------------------------------------------------------- versions stamp
+# Written before the smoke tests; the torch assertion turns a silent float
+# into a failed build. Read it with:
+#   docker run --rm --entrypoint cat piper-trainer:cuda /opt/VERSIONS
+# (Build args arrive as environment variables in RUN; the quoted heredoc
+#  delimiter means no shell expansion happens inside the Python.)
+RUN python3 - <<'EOF'
+import os
+import sys
+
+import torch
+
+installed = torch.__version__
+pinned = os.environ.get("TORCH_VERSION", "")
+if pinned and not installed.split("+")[0].startswith(pinned.split("+")[0]):
+    print(f"torch {installed} does not match the pin {pinned!r} — the "
+          f"index served a different version. Fix TORCH_VERSION or the "
+          f"index URL; refusing to ship a float.", file=sys.stderr)
+    sys.exit(1)
+EOF
+RUN piper_sha="$(cat /tmp/piper_sha)" \
+    && printf 'piper1-gpl %s (ref %s)\ntorch %s (pin %s)\n' \
+       "$piper_sha" "${PIPER_REF}" \
+       "$(python3 -c 'import torch; print(torch.__version__)')" \
+       "${TORCH_VERSION}" > /opt/VERSIONS \
+    && cat /opt/VERSIONS
 
 # ------------------------------------------------------------------ runtime
 # Everything writable lives under /workspace so the image runs fine as an
