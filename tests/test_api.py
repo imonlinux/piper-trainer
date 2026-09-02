@@ -301,3 +301,55 @@ def test_websocket_stream(client, tmp_path):
         reset = ws.receive_json()
         assert reset["type"] == "log_reset"
         assert "old log line" in reset["text"]
+
+
+# --------------------------------------------------------------- previews
+
+def write_preview(root, stage, pid, params=None):
+    pdir = root / "work" / "preview" / stage / pid
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "preview.json").write_text(json.dumps({
+        "id": pid, "stage": stage, "params": params or {},
+        "created_at": "2026-09-02T00:00:00Z",
+        "result": {"clip_count": 5, "audio": ["a.wav"]}}))
+    return pdir
+
+
+def test_preview_endpoints(client, tmp_path):
+    client.post("/api/projects", json={"name": "p1"})
+    root = tmp_path / "p1"
+    write_preview(root, "segment", "20260901T000000Z-preview-aaaa",
+                  {"source": "take.wav", "energy_threshold": 40})
+    write_preview(root, "denoise", "20260831T000000Z-preview-bbbb")
+
+    rows = client.get("/api/projects/p1/previews").json()
+    assert [r["id"] for r in rows] == ["20260901T000000Z-preview-aaaa",
+                                       "20260831T000000Z-preview-bbbb"]
+    assert rows[0]["dir"] == "work/preview/segment/20260901T000000Z-preview-aaaa"
+
+    # promote replays the preview's params as a full prepare run
+    r = client.post(
+        "/api/projects/p1/previews/20260901T000000Z-preview-aaaa/promote")
+    assert r.status_code == 202
+    job = r.json()
+    assert job["kind"] == "prepare"
+    assert job["params"] == {"source": "take.wav", "energy_threshold": 40}
+
+    assert client.post("/api/projects/p1/previews/nope/promote").status_code == 404
+    # a routable id that fails the NAME_RE guard (no path tricks needed)
+    assert client.post(
+        "/api/projects/p1/previews/bad%20id/promote").status_code == 400
+
+    # prune clears the whole scratch tree (§2.1: previews are discardable)
+    assert client.delete("/api/projects/p1/previews").json() == {"pruned": True}
+    assert client.get("/api/projects/p1/previews").json() == []
+
+
+def test_preview_submit_rejects_unknown_stage(client):
+    client.post("/api/projects", json={"name": "p1"})
+    r = client.post("/api/projects/p1/preview",
+                    json={"stage": "nope", "params": {}})
+    assert r.status_code == 202  # kind is valid; the stage fails at run time
+    job = client.get(f"/api/jobs/{r.json()['id']}").json()
+    assert job["kind"] == "preview"
+    assert job["params"]["stage"] == "nope"

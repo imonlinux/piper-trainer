@@ -11,6 +11,7 @@ design doc §7.)
 from __future__ import annotations
 
 import csv
+import json
 import re
 import shutil
 import subprocess
@@ -49,6 +50,11 @@ class JobCreate(BaseModel):
 
 class FetchCreate(BaseModel):
     catalog_path: str
+
+
+class PreviewCreate(BaseModel):
+    stage: str
+    params: dict = {}
 
 
 def _now() -> str:
@@ -415,6 +421,62 @@ def create_app(workspace: Path | None = None,
     @app.get("/api/projects/{project_id}/checkpoints")
     def project_checkpoints(project_id: str):
         return local_checkpoints(project_or_404(project_id))
+
+    # ------------------------------------------------------------- previews
+    # §2/§4.5: a preview is a job variant — same lifecycle, same log
+    # streaming — but short-lived, non-destructive and scoped to a sample.
+    # It writes only to work/preview/<stage>/<preview-id>/ (the runner
+    # enforces this); preview.json records the parameters so promote can
+    # replay them as a full run.
+
+    @app.post("/api/projects/{project_id}/preview", status_code=202)
+    async def create_preview(project_id: str, body: PreviewCreate):
+        proj = project_or_404(project_id)
+        try:
+            return await manager().submit(
+                proj.root, "preview",
+                params={**body.params, "stage": body.stage})
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get("/api/projects/{project_id}/previews")
+    def list_previews(project_id: str):
+        proj = project_or_404(project_id)
+        out = []
+        base = proj.root / "work" / "preview"
+        if base.exists():
+            for mf in sorted(base.glob("*/*/preview.json")):
+                try:
+                    data = json.loads(mf.read_text())
+                except (json.JSONDecodeError, OSError):
+                    continue  # a running preview has no preview.json yet
+                data["dir"] = str(mf.parent.relative_to(proj.root))
+                out.append(data)
+        # job ids are UTC-stamped, so lexicographic sort is newest-first
+        return sorted(out, key=lambda p: p.get("id", ""), reverse=True)
+
+    @app.post("/api/projects/{project_id}/previews/{preview_id}/promote",
+              status_code=202)
+    async def promote_preview(project_id: str, preview_id: str):
+        proj = project_or_404(project_id)
+        if not NAME_RE.match(preview_id):
+            raise HTTPException(400, "bad preview id")
+        matches = sorted(
+            (proj.root / "work" / "preview").glob(f"*/{preview_id}/preview.json"))
+        if not matches:
+            raise HTTPException(404, "no such preview")
+        data = json.loads(matches[0].read_text())
+        params = dict(data.get("params") or {})
+        params.pop("stage", None)
+        # _prepare maps the tuner's parameters (pad -> leading/trailing
+        # silence, denoise -> denoise_enabled) exactly as the preview ran them
+        return await manager().submit(proj.root, "prepare", params=params)
+
+    @app.delete("/api/projects/{project_id}/previews")
+    def prune_previews(project_id: str):
+        proj = project_or_404(project_id)
+        shutil.rmtree(proj.root / "work" / "preview", ignore_errors=True)
+        return {"pruned": True}
 
     # --------------------------------------------------------------- static
 

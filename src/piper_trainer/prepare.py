@@ -151,6 +151,85 @@ def assign_names(srcs: list[Path]) -> dict[Path, str]:
     raise RuntimeError(f"could not resolve destination names for {srcs!r}")
 
 
+# ------------------------------------------------------------------ primitives
+# One-file operations shared by the full stages above and the preview
+# variants (design doc §0: the API layer never re-implements the pipeline).
+
+def convert_one(src: Path, dst: Path, channel: str | None = None) -> None:
+    """One source -> 48 kHz mono 16-bit WAV, channel choice respected."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ffmpeg", "-y", "-i", str(src), "-vn"]
+    if channel in PAN:
+        cmd += ["-af", PAN[channel]]
+    else:
+        cmd += ["-ac", "1"]
+    cmd += ["-ar", "48000", "-c:a", "pcm_s16le", str(dst)]
+    _run(cmd)
+
+
+def excerpt(src: Path, dst: Path, seconds: float) -> None:
+    """First `seconds` of a WAV, re-encoded 16-bit PCM."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    _run(["ffmpeg", "-y", "-i", str(src), "-t", str(seconds),
+          "-c:a", "pcm_s16le", str(dst)])
+
+
+def denoise_file(src: Path, dst_dir: Path) -> Path:
+    """DeepFilterNet3 on one file — the same -D flag (STFT lookahead
+    compensation) as the batch stage; without it audio drifts out of
+    alignment with its transcript. dst_dir must differ from src's parent."""
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    _run(["deep-filter", "-D", "-o", str(dst_dir), str(src)])
+    return dst_dir / src.name
+
+
+def split_audio(
+    src: Path,
+    out_dir: Path,
+    energy_threshold: float = 55,
+    min_dur: float = 1.5,
+    max_dur: float = 10.0,
+    max_silence: float = 0.4,
+    max_leading_silence: float = 0.15,
+    max_trailing_silence: float = 0.15,
+    stem: str | None = None,
+) -> list[dict]:
+    """VAD-split one WAV into out_dir; returns boundary metadata per clip.
+
+    Same auditok call (and the same older-API fallback) as the segment
+    stage; `stem` overrides the clip-name stem so previews can name clips
+    after the raw source instead of an internal work file.
+    """
+    import auditok
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    kwargs = dict(min_dur=min_dur, max_dur=max_dur, max_silence=max_silence,
+                  energy_threshold=energy_threshold)
+    region = auditok.load(str(src))
+    try:
+        events = region.split(
+            max_leading_silence=max_leading_silence,
+            max_trailing_silence=max_trailing_silence, **kwargs)
+    except TypeError:
+        # older auditok without the leading/trailing silence parameters
+        events = region.split(**kwargs)
+    stem = stem or src.stem
+    clips = []
+    for i, ev in enumerate(events, start=1):
+        # auditok moved start/end from ev.meta to the region itself;
+        # support both APIs
+        start = getattr(ev, "start", None)
+        if start is None:
+            start, end = ev.meta.start, ev.meta.end
+        else:
+            end = ev.end
+        name = f"{stem}_{i:04d}_{start:.3f}-{end:.3f}.wav"
+        ev.save(str(out_dir / name))
+        clips.append({"clip": name, "start": round(start, 3),
+                      "end": round(end, 3)})
+    return clips
+
+
 # --------------------------------------------------------------------- stages
 
 def to_48k(project: Project, channel: str | None = None,
@@ -167,18 +246,11 @@ def to_48k(project: Project, channel: str | None = None,
     if not force and _stage_matches(project.work48k, "to_48k", params, srcs):
         return "skipped", {}
     _clear_dir(project.work48k)
-    pan = PAN.get(channel or "")
     names = assign_names(srcs)
     renamed = {}
     for src in srcs:
         dst = project.work48k / f"{names[src]}.wav"
-        cmd = ["ffmpeg", "-y", "-i", str(src), "-vn"]
-        if pan:
-            cmd += ["-af", pan]
-        else:
-            cmd += ["-ac", "1"]
-        cmd += ["-ar", "48000", "-c:a", "pcm_s16le", str(dst)]
-        _run(cmd)
+        convert_one(src, dst, channel=channel)
         if dst.stem != src.stem:  # sanitized and/or collision-renamed
             renamed[src.name] = dst.name
     _write_stage_manifest(project.work48k, "to_48k", params, srcs, len(srcs))
@@ -232,8 +304,6 @@ def segment(
     plosives teach the model to swallow consonants) and gives every clip the
     same padding, which matters because VITS learns the padding too.
     """
-    import auditok
-
     srcs = sorted(project.denoised.glob("*.wav"))
     if not srcs:
         return 0
@@ -245,28 +315,14 @@ def segment(
         return "skipped"
     _clear_dir(project.clips)
     total = 0
-    kwargs = dict(min_dur=min_dur, max_dur=max_dur, max_silence=max_silence,
-                  energy_threshold=energy_threshold)
     for src in srcs:
-        region = auditok.load(str(src))
-        try:
-            events = region.split(
-                max_leading_silence=max_leading_silence,
-                max_trailing_silence=max_trailing_silence, **kwargs)
-        except TypeError:
-            # older auditok without the leading/trailing silence parameters
-            events = region.split(**kwargs)
-        for i, ev in enumerate(events, start=1):
-            # auditok moved start/end from ev.meta to the region itself;
-            # support both APIs
-            start = getattr(ev, "start", None)
-            if start is None:
-                start, end = ev.meta.start, ev.meta.end
-            else:
-                end = ev.end
-            name = f"{src.stem}_{i:04d}_{start:.3f}-{end:.3f}.wav"
-            ev.save(str(project.clips / name))
-            total += 1
+        clips = split_audio(src, project.clips,
+                            energy_threshold=energy_threshold,
+                            min_dur=min_dur, max_dur=max_dur,
+                            max_silence=max_silence,
+                            max_leading_silence=max_leading_silence,
+                            max_trailing_silence=max_trailing_silence)
+        total += len(clips)
     _write_stage_manifest(project.clips, "segment", params, srcs, total)
     return total
 

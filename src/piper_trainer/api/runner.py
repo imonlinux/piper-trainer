@@ -309,6 +309,124 @@ def _fetch_checkpoint(project: Project, params: dict, emit) -> dict:
             "files": mapping}
 
 
+def _preview_source(project: Project, params: dict) -> Path:
+    name = Path(params.get("source") or "").name
+    src = project.raw / name
+    if not name or not src.is_file():
+        raise RuntimeError(f"source not found in raw/: {name!r}")
+    return src
+
+
+def _preview_dir(project: Project, params: dict, stage: str) -> Path:
+    """Previews write ONLY to work/preview/<stage>/<preview-id>/ (§2.1);
+    nothing enters dataset/ except via a full run."""
+    d = project.root / "work" / "preview" / stage / params["_job_dir"].name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _write_preview(pdir: Path, stage: str, params: dict, result: dict) -> dict:
+    """Write preview.json (the envelope records the winning parameters so
+    promote can replay them as a full run, §2.1) and return the result
+    itself, which becomes the job's ##RESULT payload."""
+    from .jobs import _now
+    envelope = {"id": pdir.name, "stage": stage,
+                "params": {k: v for k, v in params.items()
+                           if k not in ("stage", "_job_dir")},
+                "created_at": _now(), "result": result}
+    (pdir / "preview.json").write_text(json.dumps(envelope, indent=2) + "\n")
+    return result
+
+
+def _histogram(durations: list[float], width: float = 1.0) -> list[dict]:
+    """1 s duration bins: the sweep's at-a-glance shape comparison."""
+    bins: dict[int, int] = {}
+    for d in durations:
+        bins[min(int(d / width), 30)] = bins.get(min(int(d / width), 30), 0) + 1
+    return [{"from": b * width, "to": (b + 1) * width, "count": n}
+            for b, n in sorted(bins.items())]
+
+
+def _preview_segment(project: Project, params: dict, emit) -> dict:
+    """§2.2 segment preview: one source through the tuner's VAD parameters.
+    Returns clip count, duration histogram, boundary timestamps and the
+    first clips as playable audio — judge whether clips start/end on word
+    boundaries and whether the count is plausible for the duration."""
+    src = _preview_source(project, params)
+    pdir = _preview_dir(project, params, "segment")
+    channel = params.get("channel")
+    keep = max(1, min(int(params.get("clips_kept", 5)), 20))
+
+    emit("PROGRESS", {"current": 1, "total": 3, "unit": "step"})
+    workdir = pdir / "_work"
+    work = workdir / "src-48k.wav"
+    prepare.convert_one(src, work, channel=channel)
+    if params.get("denoise", True):
+        # the full pipeline denoises before segmenting, so the preview must
+        # judge boundaries on the audio a full run would actually split
+        emit("PROGRESS", {"current": 2, "total": 3, "unit": "step"})
+        prepare.denoise_file(work, pdir / "_dn")
+        (pdir / "_dn" / work.name).replace(work)
+        (pdir / "_dn").rmdir()
+
+    emit("PROGRESS", {"current": 3, "total": 3, "unit": "step"})
+    clips = prepare.split_audio(
+        work, pdir, stem=src.stem,
+        energy_threshold=float(params.get("energy_threshold", 55)),
+        min_dur=float(params.get("min_dur", 1.5)),
+        max_dur=float(params.get("max_dur", 10.0)),
+        max_silence=float(params.get("max_silence", 0.4)),
+        max_leading_silence=float(params.get("pad", 0.15)),
+        max_trailing_silence=float(params.get("pad", 0.15)))
+    shutil.rmtree(workdir, ignore_errors=True)
+
+    for extra in clips[keep:]:  # previews stay small; keep the first N
+        (pdir / extra["clip"]).unlink(missing_ok=True)
+    durs = [c["end"] - c["start"] for c in clips]
+    result = {"clip_count": len(clips),
+              "duration_total": round(sum(durs), 2),
+              "histogram": _histogram(durs),
+              "clips": clips[:200],       # boundaries for the overlay
+              "clips_truncated": len(clips) > 200,
+              "audio": [c["clip"] for c in clips[:keep]]}
+    emit("TARGET", {"total": len(clips), "unit": "clip"})
+    return _write_preview(pdir, "segment", params, result)
+
+
+def _preview_denoise(project: Project, params: dict, emit) -> dict:
+    """§2.2 denoise preview: an excerpt, original vs denoised. Judge
+    sibilants, breaths, plosives — metallic or gated means back off."""
+    src = _preview_source(project, params)
+    pdir = _preview_dir(project, params, "denoise")
+    seconds = min(max(float(params.get("seconds", 25)), 1.0), 60.0)
+
+    emit("PROGRESS", {"current": 1, "total": 3, "unit": "step"})
+    loud = pdir / "src-48k.wav"
+    prepare.convert_one(src, loud, channel=params.get("channel"))
+    original = pdir / "original.wav"
+    prepare.excerpt(loud, original, seconds)
+    loud.unlink()
+    emit("PROGRESS", {"current": 2, "total": 3, "unit": "step"})
+    prepare.denoise_file(original, pdir / "_dn")
+    (pdir / "_dn" / original.name).replace(pdir / "denoised.wav")
+    (pdir / "_dn").rmdir()
+    emit("PROGRESS", {"current": 3, "total": 3, "unit": "step"})
+    return _write_preview(pdir, "denoise", params,
+                          {"seconds": seconds,
+                           "audio": ["original.wav", "denoised.wav"]})
+
+
+def _preview(project: Project, params: dict, emit) -> dict:
+    stage = params.get("stage")
+    if stage == "segment":
+        return _preview_segment(project, params, emit)
+    if stage == "denoise":
+        return _preview_denoise(project, params, emit)
+    raise RuntimeError(f"unknown preview stage {stage!r} "
+                       "(step 2 ships segment and denoise; finalize, "
+                       "transcribe, train and audition arrive later)")
+
+
 HANDLERS = {
     "prepare": _prepare,
     "transcribe": _transcribe,
@@ -319,6 +437,7 @@ HANDLERS = {
     "export": _export,
     "ingest": _ingest,
     "fetch-checkpoint": _fetch_checkpoint,
+    "preview": _preview,
 }
 
 # validate is read-only; the CLI does not lock it either

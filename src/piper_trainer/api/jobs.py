@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 KINDS = ("prepare", "transcribe", "validate", "clean", "restore",
-         "train", "export", "ingest", "fetch-checkpoint")
+         "train", "export", "ingest", "fetch-checkpoint", "preview")
 
 _PROGRESS_RE = re.compile(r"\bEpoch (\d+)\b")
 _DIRECTIVE_RE = re.compile(r"^##(TARGET|PROGRESS|RESULT) (.*)$")
