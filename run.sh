@@ -4,6 +4,7 @@
 #   ./run.sh doctor
 #   ./run.sh init /workspace/marvin --name marvin
 #   ./run.sh prepare /workspace/marvin --tier medium
+#   ./run.sh serve                        # API + Bones UI on :8000
 #
 # Handles the runtime differences that compose files get wrong:
 #   - rootless podman: no --user (host UID already maps to container root);
@@ -20,6 +21,7 @@
 #   VARIANT    rocm | cuda | cpu                       (default: rocm)
 #   IMAGE      override the full image reference
 #   ENGINE     podman | docker                         (default: autodetect)
+#   API_PORT   host port for `serve`                   (default: 8000)
 #   SHELL_IN   set to 1 to drop into a shell instead of running the CLI
 
 set -euo pipefail
@@ -92,6 +94,19 @@ args+=(-v "${WORKSPACE}:/workspace${mount_opts}")
 
 # training and Whisper both want more than the 64 MB default
 args+=(--shm-size 8g)
+
+# ----------------------------------------------------------------- serve
+# `./run.sh serve` publishes API_PORT and defaults the container-internal
+# listener to 0.0.0.0 (127.0.0.1 inside a container is unreachable from the
+# host). An explicit --host on the command line always wins.
+if [[ "${1:-}" == "serve" ]]; then
+    args+=(-p "${API_PORT:-8000}:8000")
+    host_set=0
+    for a in "$@"; do
+        case "$a" in --host|--host=*) host_set=1 ;; esac
+    done
+    [[ "$host_set" == "0" ]] && set -- "$@" --host 0.0.0.0
+fi
 
 if [[ "${SHELL_IN:-0}" == "1" ]]; then
     args+=(--entrypoint /bin/bash)

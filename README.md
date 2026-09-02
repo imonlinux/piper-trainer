@@ -285,7 +285,13 @@ pip install -e '.[api]'
 piper-trainer serve                      # http://127.0.0.1:8000/
 ```
 
-The training images carry the api runtime too, so the same thing works from the image (workspace and GPU passthrough come from compose):
+The training images carry the api runtime too, so the same thing works from the image:
+
+```bash
+./run.sh serve                           # http://localhost:8000/ (API_PORT to change)
+```
+
+run.sh is the supported launcher — it picks the right UID mapping, GPU groups, and SELinux labels for podman vs docker. Prefer it over `compose run`: under rootless podman, compose's fixed `user:` line makes `/workspace` unwritable, and its numeric render-GID default is Debian's, not your distro's — the two failures `doctor` reports as *not writable* and *GPU available (0 devices)*. On rootful docker the compose form also works:
 
 ```bash
 docker compose --profile rocm run --rm --service-ports trainer-rocm serve --host 0.0.0.0
