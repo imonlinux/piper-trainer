@@ -66,6 +66,28 @@ def _write_job(job_dir: Path, **fields) -> dict:
     return job
 
 
+def _log_tail(job_dir: Path, limit: int = 300) -> str:
+    """Last non-empty log line — the tail of an unhandled traceback.
+
+    Reads only the end of the file: training logs grow to megabytes of
+    progress bars, and this runs once per failed job.
+    """
+    path = job_dir / "log.txt"
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - 4096))
+            chunk = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    lines = [ln.strip() for ln in chunk.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    line = lines[-1]
+    return line[:limit - 1] + "…" if len(line) > limit else line
+
+
 class JobManager:
     """Owns every subprocess and every job.json write for one workspace."""
 
@@ -328,7 +350,14 @@ class JobManager:
             state, error = "cancelled", "cancelled by user"
         else:
             state = "failed"
-            error = f"exited with code {code}"
+            # Prefer a runner-reported reason, then the last log line (the
+            # tail of an unhandled traceback), then the bare exit code. The
+            # numeric code stays in exit_code either way.
+            error = None
+            if isinstance(result, dict) and result.get("error"):
+                error = str(result["error"])
+            else:
+                error = _log_tail(jd) or f"exited with code {code}"
         updates: dict = {"state": state, "exit_code": code,
                          "finished_at": _now(), "pid": None, "error": error}
         if result is not None:

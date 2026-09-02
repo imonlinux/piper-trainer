@@ -20,6 +20,7 @@ import json
 import re
 import shutil
 import sys
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -210,7 +211,8 @@ def _export(project: Project, params: dict, emit) -> dict:
     tier = _tier(project, params)
     ckpt = params.get("checkpoint") or train_mod.latest_checkpoint(project, tier)
     if not ckpt:
-        raise RuntimeError("no checkpoint found to export")
+        raise RuntimeError(
+            f"no {tier} checkpoint found to export — run a train job first")
     onnx_path, json_path = export_mod.export(
         project, tier, Path(ckpt),
         voice_name=params.get("voice_name"),
@@ -344,7 +346,14 @@ def main(argv: list[str]) -> int:
         print("usage: python -m piper_trainer.api.runner <job-dir>",
               file=sys.stderr)
         return 2
-    result = execute(Path(argv[1]))
+    try:
+        result = execute(Path(argv[1]))
+    except Exception as exc:
+        traceback.print_exc()  # full detail lands in log.txt via the tee
+        # The manager reads this as job["error"], so the jobs table shows
+        # the reason and not a bare "exited with code 1".
+        _emit("RESULT", {"error": str(exc) or type(exc).__name__})
+        return 1
     _emit("RESULT", result)
     return 0
 

@@ -36,6 +36,19 @@ print('about to fail')
 sys.exit(3)
 """
 
+TRACEBACK_RUNNER_CODE = """
+import sys
+print('Traceback (most recent call last):')
+print('  File "<string>", line 2, in <module>')
+print('RuntimeError: disk on fire')
+sys.exit(1)
+"""
+
+RESULT_ERROR_RUNNER_CODE = """
+print('##RESULT {"error": "validation blew up"}')
+import sys; sys.exit(1)
+"""
+
 
 def ok_runner(jd) -> list[str]:
     return [sys.executable, "-c", OK_RUNNER_CODE]
@@ -47,6 +60,14 @@ def slow_runner(jd) -> list[str]:
 
 def fail_runner(jd) -> list[str]:
     return [sys.executable, "-c", FAIL_RUNNER_CODE]
+
+
+def traceback_runner(jd) -> list[str]:
+    return [sys.executable, "-c", TRACEBACK_RUNNER_CODE]
+
+
+def result_error_runner(jd) -> list[str]:
+    return [sys.executable, "-c", RESULT_ERROR_RUNNER_CODE]
 
 
 def make_project(tmp_path, name="proj") -> object:
@@ -98,7 +119,27 @@ async def test_nonzero_exit_fails_the_job(mgr, tmp_path):
     job = await mgr.submit(root, "prepare")
     job = await wait_state(mgr, job["id"], "failed")
     assert job["exit_code"] == 3
-    assert "exited with code 3" in job["error"]
+    # the last log line is the error ("about to fail"), not a bare exit code
+    assert job["error"] == "about to fail"
+
+
+async def test_error_prefers_last_log_line(mgr, tmp_path):
+    """An unhandled traceback surfaces as its final line, not 'exited 1'."""
+    mgr._runner_cmd = traceback_runner
+    root = make_project(tmp_path)
+    job = await mgr.submit(root, "prepare")
+    job = await wait_state(mgr, job["id"], "failed")
+    assert job["exit_code"] == 1
+    assert job["error"] == "RuntimeError: disk on fire"
+
+
+async def test_error_prefers_structured_result(mgr, tmp_path):
+    """A runner-reported ##RESULT error beats the log tail."""
+    mgr._runner_cmd = result_error_runner
+    root = make_project(tmp_path)
+    job = await mgr.submit(root, "prepare")
+    job = await wait_state(mgr, job["id"], "failed")
+    assert job["error"] == "validation blew up"
 
 
 async def test_one_running_job_per_project(mgr, tmp_path):

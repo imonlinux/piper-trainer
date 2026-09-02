@@ -123,3 +123,19 @@ def test_process_entry_emits_result_and_exits_zero(tmp_path):
     payload = json.loads(proc.stdout.split("##RESULT ", 1)[1]
                          .splitlines()[0])
     assert "findings" in payload
+
+
+def test_main_reports_failure_as_result(tmp_path, capsys):
+    """main() turns a stage exception into a ##RESULT error + exit 1, so the
+    jobs table shows the reason instead of a bare 'exited with code 1'."""
+    jd = make_job(tmp_path, "export")   # no checkpoint exists -> RuntimeError
+    rc = runner.main(["piper_trainer.api.runner", str(jd)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "##RESULT" in out
+    assert "run a train job first" in out
+
+
+def test_main_usage_error(tmp_path, capsys):
+    assert runner.main([]) == 2
+    assert "usage:" in capsys.readouterr().err
