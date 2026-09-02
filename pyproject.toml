@@ -15,7 +15,10 @@ piper-trainer = "piper_trainer.cli:main"
 dev = ["pytest>=8", "pytest-asyncio", "httpx"]
 # API server + Bones UI. Kept out of the default install: the CLI stays
 # dependency-free (the training images install these explicitly).
-api = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
+# websockets is what makes uvicorn serve /api/jobs/{id}/stream — bare
+# uvicorn logs "Unsupported upgrade request" and the endpoint 404s.
+api = ["fastapi>=0.110", "uvicorn>=0.29", "websockets>=12",
+       "python-multipart>=0.0.9"]
 # What the pipeline imports beyond the stdlib (soundfile and numpy arrive
 # transitively and are not declared). The SUPPORTED path is the container:
 # piper1-gpl (with both C extensions), ffmpeg, espeak-ng, and deep-filter

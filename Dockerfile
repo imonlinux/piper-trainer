@@ -151,13 +151,16 @@ RUN python3 -m pip install \
 
 # --------------------------------------------------- API server + Bones UI
 # The [api] extra's runtime deps, installed explicitly because the editable
-# install below uses --no-deps by design. The UI itself (src/piper_trainer/ui/)
-# needs no build step and ships with the COPY src above; serve it with:
-#   docker compose --profile rocm run --rm --service-ports trainer-rocm \
-#     serve --host 0.0.0.0
+# install below uses --no-deps by design. websockets is not optional here:
+# bare uvicorn refuses the WS upgrade ("Unsupported upgrade request") and
+# /api/jobs/{id}/stream 404s, leaving the UI on its polling fallback.
+# The UI itself (src/piper_trainer/ui/) needs no build step and ships with
+# the COPY src above; serve it with ./run.sh serve (see run.sh for why not
+# compose run under rootless podman).
 RUN python3 -m pip install \
         "fastapi>=0.110" \
         "uvicorn>=0.29" \
+        "websockets>=12" \
         "python-multipart>=0.0.9"
 
 EXPOSE 8000
