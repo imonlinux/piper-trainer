@@ -1,0 +1,1045 @@
+{
+ "files": {
+  "ar/ar_JO/kareem/low": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=4509-step=805030.ckpt",
+   "train.sh"
+  ],
+  "ar/ar_JO/kareem/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=5079-step=1682020.ckpt",
+   "train.sh"
+  ],
+  "bg/bg_BG/dimitar/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=5097-step=152516.ckpt"
+  ],
+  "bn/bn_BD/google/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "last.ckpt"
+  ],
+  "ca/ca_ES/upc_ona/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=3184-step=1641140.ckpt",
+   "train.sh"
+  ],
+  "cs/cs_CZ/jirka/low": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=9119-step=1294098.ckpt",
+   "train.sh"
+  ],
+  "cs/cs_CZ/jirka/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=8819-step=1435400.ckpt",
+   "train.sh"
+  ],
+  "da/da_DK/talesyntese/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=3264-step=1634940.ckpt",
+   "train.sh"
+  ],
+  "de/de_DE/mls/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=128-step=5149698.ckpt",
+   "train.sh"
+  ],
+  "de/de_DE/thorsten/high": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2665-step=1182078.ckpt"
+  ],
+  "de/de_DE/thorsten/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=3135-step=2702056.ckpt",
+   "train.sh"
+  ],
+  "de/de_DE/thorsten_emotional/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=6069-step=230660.ckpt",
+   "train.sh"
+  ],
+  "el/el_GR/rapunzelina/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=1999-step=485528.ckpt"
+  ],
+  "en/en_GB/alan/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=6339-step=1647790.ckpt",
+   "train.sh"
+  ],
+  "en/en_GB/alba/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=4179-step=2101090.ckpt",
+   "train.sh"
+  ],
+  "en/en_GB/aru/medium": [
+   "LICENSE",
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=3479-step=939600.ckpt",
+   "train.sh"
+  ],
+  "en/en_GB/cori/high": [
+   "MODEL_CARD",
+   "config.json",
+   "cori-high-500.ckpt"
+  ],
+  "en/en_GB/cori/medium": [
+   "cori-med-640.ckpt"
+  ],
+  "en/en_GB/jenny_dioco/medium": [
+   "LICENSE",
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2748-step=1729300.ckpt",
+   "train.sh"
+  ],
+  "en/en_GB/northern_english_male/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=9029-step=2261720.ckpt",
+   "train.sh"
+  ],
+  "en/en_GB/semaine/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=1849-step=214600.ckpt",
+   "train.sh"
+  ],
+  "en/en_GB/vctk/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=545-step=1511328.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/amy/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=6679-step=1554200.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/arctic/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=663-step=646736.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/bryce/medium": [
+   "MODEL_CARD",
+   "bryce-3499.ckpt",
+   "config.json"
+  ],
+  "en/en_US/hfc_female/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2868-step=1575188.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/hfc_male/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2785-step=2128064.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/joe/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=7889-step=1221224.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/john/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "john-2599.ckpt"
+  ],
+  "en/en_US/kristin/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "kristin-2000.ckpt"
+  ],
+  "en/en_US/kusal/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2652-step=1953828.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/l2arctic/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=536-step=902160.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/lessac/high": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2218-step=838782.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/lessac/low": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2307-step=558536.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/lessac/medium": [
+   ".gitattributes",
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2164-step=1355540.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/libritts_r/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=404-step=1887300.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/ljspeech/high": [
+   "MODEL_CARD",
+   "config.json",
+   "ljspeech-2000.ckpt"
+  ],
+  "en/en_US/ljspeech/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "lj-med_1000.ckpt"
+  ],
+  "en/en_US/mike/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=5460-val_mos=4.2686.ckpt"
+  ],
+  "en/en_US/ryan/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=4641-step=3104302.ckpt",
+   "train.sh"
+  ],
+  "en/en_US/sam/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=4688-step=106008.ckpt"
+  ],
+  "es/es_ES/davefx/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=5629-step=1605020.ckpt",
+   "train.sh"
+  ],
+  "es/es_ES/sharvard/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=4899-step=215600.ckpt",
+   "train.sh"
+  ],
+  "es/es_MX/ald/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=9999-step=1753600.ckpt",
+   "train.sh"
+  ],
+  "es/es_MX/ald/x_low": [
+   "MODEL_CARD",
+   "epoch=1953-step=244064.ckpt",
+   "es_MX-ald-x_low.onnx.json"
+  ],
+  "et/et_EE/news/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "last.ckpt"
+  ],
+  "fi/fi_FI/harri/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=3369-step=1714630.ckpt",
+   "train.sh"
+  ],
+  "fr/fr_FR/mls/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=317-step=3124032.ckpt",
+   "train.sh"
+  ],
+  "fr/fr_FR/siwis/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=3304-step=2050940.ckpt",
+   "train.sh"
+  ],
+  "fr/fr_FR/upmc/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2999-step=702000.ckpt",
+   "train.sh"
+  ],
+  "he/he_IL/saspeech/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "last.ckpt"
+  ],
+  "hi/hi_IN/rohan/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=3190-step=309852.ckpt"
+  ],
+  "hu/hu_HU/anna/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=8379-step=1504700.ckpt",
+   "train.sh"
+  ],
+  "hu/hu_HU/berta/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=5249-step=1429580.ckpt",
+   "train.sh"
+  ],
+  "hu/hu_HU/imre/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=5669-step=1607900.ckpt",
+   "train.sh"
+  ],
+  "id/id_ID/news_tts/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=4927-step=232092.ckpt"
+  ],
+  "ja/ja_JA/hi_fi_captain/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "last.ckpt"
+  ],
+  "ka/ka_GE/natia/medium": [
+   "LICENSE",
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=5239-step=1607690.ckpt",
+   "train.sh"
+  ],
+  "ko/ko_KR/kss/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "last.ckpt"
+  ],
+  "ku/ku_TR/berfin_renas/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=934-step=114070.ckpt"
+  ],
+  "lb/lb_LU/marylux/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=4419-step=1558490.ckpt",
+   "train.sh"
+  ],
+  "ml/ml_IN/arjun/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=3440-step=298584.ckpt"
+  ],
+  "ml/ml_IN/meera/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=3168-step=92368.ckpt"
+  ],
+  "mr/mr_IN/google/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "last.ckpt"
+  ],
+  "ne/ne_NP/chitwan/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=6618-step=187068.ckpt"
+  ],
+  "ne/ne_NP/google/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2829-step=367900.ckpt",
+   "train.sh"
+  ],
+  "nl/nl_BE/nathalie/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=6119-step=1806410.ckpt",
+   "train.sh"
+  ],
+  "nl/nl_NL/mls/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=242-step=9245178.ckpt",
+   "train.sh"
+  ],
+  "nl/nl_NL/pim/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=5120-step=100504.ckpt"
+  ],
+  "nl/nl_NL/ronnie/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=5105-step=105876.ckpt"
+  ],
+  "no/no_NO/nvcc/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "last.ckpt"
+  ],
+  "no/no_NO/talesyntese/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=3459-step=2052250.ckpt",
+   "train.sh"
+  ],
+  "pl/pl_PL/darkman/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=4909-step=1454360.ckpt",
+   "train.sh"
+  ],
+  "pl/pl_PL/gosia/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=5001-step=1457672.ckpt",
+   "train.sh"
+  ],
+  "pl/pl_PL/mc_speech/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2531-step=1906774.ckpt",
+   "train.sh"
+  ],
+  "pt/pt_BR/cadu/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=5195-step=109116.ckpt"
+  ],
+  "pt/pt_BR/faber/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=6159-step=1230728.ckpt",
+   "train.sh"
+  ],
+  "pt/pt_BR/jeff/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=5462-step=118728.ckpt"
+  ],
+  "pt/pt_PT/tug\u00e3o/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=5489-step=1548390.ckpt",
+   "train.sh"
+  ],
+  "ro/ro_RO/mihai/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=7809-step=1558760.ckpt",
+   "train.sh"
+  ],
+  "ru/ru_RU/denis/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=4474-step=1521860.ckpt",
+   "train.sh"
+  ],
+  "ru/ru_RU/dmitri/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=5589-step=1478840.ckpt",
+   "train.sh"
+  ],
+  "ru/ru_RU/irina/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=4139-step=929464.ckpt",
+   "train.sh"
+  ],
+  "ru/ru_RU/ruslan/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2436-step=1724372.ckpt",
+   "train.sh"
+  ],
+  "sk/sk_SK/lili/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=9999-step=1919660.ckpt",
+   "train.sh"
+  ],
+  "sr/sr_RS/serbski_institut/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=1899-step=178600.ckpt",
+   "train.sh"
+  ],
+  "sw/sw_CD/lanfrica/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2619-step=1635820.ckpt",
+   "train.sh"
+  ],
+  "te/te_IN/maya/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=3277-step=839202.ckpt"
+  ],
+  "tr/tr_TR/dfki/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=5679-step=1489110.ckpt",
+   "train.sh"
+  ],
+  "uk/uk_UA/ukrainian_tts/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=2090-step=1166778.ckpt",
+   "train.sh"
+  ],
+  "ur/ur_PK/fasih/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=3206-step=383452.ckpt"
+  ],
+  "vi/vi_VN/vais1000/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=4769-step=919580.ckpt",
+   "train.sh"
+  ],
+  "zh/zh_CN/chaowen/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=6261-step=554996.ckpt"
+  ],
+  "zh/zh_CN/huayan/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "dataset.jsonl.gz",
+   "epoch=3269-step=2460540.ckpt",
+   "train.sh"
+  ],
+  "zh/zh_CN/xiao_ya/medium": [
+   "MODEL_CARD",
+   "config.json",
+   "epoch=2803-step=437424.ckpt"
+  ]
+ },
+ "generated": "2026-09-01",
+ "languages": {
+  "ar": {
+   "ar_JO": {
+    "kareem": [
+     "low",
+     "medium"
+    ]
+   }
+  },
+  "bg": {
+   "bg_BG": {
+    "dimitar": [
+     "medium"
+    ]
+   }
+  },
+  "bn": {
+   "bn_BD": {
+    "google": [
+     "medium"
+    ]
+   }
+  },
+  "ca": {
+   "ca_ES": {
+    "upc_ona": [
+     "medium"
+    ]
+   }
+  },
+  "cs": {
+   "cs_CZ": {
+    "jirka": [
+     "low",
+     "medium"
+    ]
+   }
+  },
+  "da": {
+   "da_DK": {
+    "talesyntese": [
+     "medium"
+    ]
+   }
+  },
+  "de": {
+   "de_DE": {
+    "mls": [
+     "medium"
+    ],
+    "thorsten": [
+     "high",
+     "medium"
+    ],
+    "thorsten_emotional": [
+     "medium"
+    ]
+   }
+  },
+  "el": {
+   "el_GR": {
+    "rapunzelina": [
+     "medium"
+    ]
+   }
+  },
+  "en": {
+   "en_GB": {
+    "alan": [
+     "medium"
+    ],
+    "alba": [
+     "medium"
+    ],
+    "aru": [
+     "medium"
+    ],
+    "cori": [
+     "high",
+     "medium"
+    ],
+    "jenny_dioco": [
+     "medium"
+    ],
+    "northern_english_male": [
+     "medium"
+    ],
+    "semaine": [
+     "medium"
+    ],
+    "vctk": [
+     "medium"
+    ]
+   },
+   "en_US": {
+    "amy": [
+     "medium"
+    ],
+    "arctic": [
+     "medium"
+    ],
+    "bryce": [
+     "medium"
+    ],
+    "hfc_female": [
+     "medium"
+    ],
+    "hfc_male": [
+     "medium"
+    ],
+    "joe": [
+     "medium"
+    ],
+    "john": [
+     "medium"
+    ],
+    "kristin": [
+     "medium"
+    ],
+    "kusal": [
+     "medium"
+    ],
+    "l2arctic": [
+     "medium"
+    ],
+    "lessac": [
+     "high",
+     "low",
+     "medium"
+    ],
+    "libritts_r": [
+     "medium"
+    ],
+    "ljspeech": [
+     "high",
+     "medium"
+    ],
+    "mike": [
+     "medium"
+    ],
+    "ryan": [
+     "medium"
+    ],
+    "sam": [
+     "medium"
+    ]
+   }
+  },
+  "es": {
+   "es_ES": {
+    "davefx": [
+     "medium"
+    ],
+    "sharvard": [
+     "medium"
+    ]
+   },
+   "es_MX": {
+    "ald": [
+     "medium",
+     "x_low"
+    ]
+   }
+  },
+  "et": {
+   "et_EE": {
+    "news": [
+     "medium"
+    ]
+   }
+  },
+  "fi": {
+   "fi_FI": {
+    "harri": [
+     "medium"
+    ]
+   }
+  },
+  "fr": {
+   "fr_FR": {
+    "mls": [
+     "medium"
+    ],
+    "siwis": [
+     "medium"
+    ],
+    "upmc": [
+     "medium"
+    ]
+   }
+  },
+  "he": {
+   "he_IL": {
+    "saspeech": [
+     "medium"
+    ]
+   }
+  },
+  "hi": {
+   "hi_IN": {
+    "rohan": [
+     "medium"
+    ]
+   }
+  },
+  "hu": {
+   "hu_HU": {
+    "anna": [
+     "medium"
+    ],
+    "berta": [
+     "medium"
+    ],
+    "imre": [
+     "medium"
+    ]
+   }
+  },
+  "id": {
+   "id_ID": {
+    "news_tts": [
+     "medium"
+    ]
+   }
+  },
+  "ja": {
+   "ja_JA": {
+    "hi_fi_captain": [
+     "medium"
+    ]
+   }
+  },
+  "ka": {
+   "ka_GE": {
+    "natia": [
+     "medium"
+    ]
+   }
+  },
+  "ko": {
+   "ko_KR": {
+    "kss": [
+     "medium"
+    ]
+   }
+  },
+  "ku": {
+   "ku_TR": {
+    "berfin_renas": [
+     "medium"
+    ]
+   }
+  },
+  "lb": {
+   "lb_LU": {
+    "marylux": [
+     "medium"
+    ]
+   }
+  },
+  "ml": {
+   "ml_IN": {
+    "arjun": [
+     "medium"
+    ],
+    "meera": [
+     "medium"
+    ]
+   }
+  },
+  "mr": {
+   "mr_IN": {
+    "google": [
+     "medium"
+    ]
+   }
+  },
+  "ne": {
+   "ne_NP": {
+    "chitwan": [
+     "medium"
+    ],
+    "google": [
+     "medium"
+    ]
+   }
+  },
+  "nl": {
+   "nl_BE": {
+    "nathalie": [
+     "medium"
+    ]
+   },
+   "nl_NL": {
+    "mls": [
+     "medium"
+    ],
+    "pim": [
+     "medium"
+    ],
+    "ronnie": [
+     "medium"
+    ]
+   }
+  },
+  "no": {
+   "no_NO": {
+    "nvcc": [
+     "medium"
+    ],
+    "talesyntese": [
+     "medium"
+    ]
+   }
+  },
+  "pl": {
+   "pl_PL": {
+    "darkman": [
+     "medium"
+    ],
+    "gosia": [
+     "medium"
+    ],
+    "mc_speech": [
+     "medium"
+    ]
+   }
+  },
+  "pt": {
+   "pt_BR": {
+    "cadu": [
+     "medium"
+    ],
+    "faber": [
+     "medium"
+    ],
+    "jeff": [
+     "medium"
+    ]
+   },
+   "pt_PT": {
+    "tug\u00e3o": [
+     "medium"
+    ]
+   }
+  },
+  "ro": {
+   "ro_RO": {
+    "mihai": [
+     "medium"
+    ]
+   }
+  },
+  "ru": {
+   "ru_RU": {
+    "denis": [
+     "medium"
+    ],
+    "dmitri": [
+     "medium"
+    ],
+    "irina": [
+     "medium"
+    ],
+    "ruslan": [
+     "medium"
+    ]
+   }
+  },
+  "sk": {
+   "sk_SK": {
+    "lili": [
+     "medium"
+    ]
+   }
+  },
+  "sr": {
+   "sr_RS": {
+    "serbski_institut": [
+     "medium"
+    ]
+   }
+  },
+  "sw": {
+   "sw_CD": {
+    "lanfrica": [
+     "medium"
+    ]
+   }
+  },
+  "te": {
+   "te_IN": {
+    "maya": [
+     "medium"
+    ]
+   }
+  },
+  "tr": {
+   "tr_TR": {
+    "dfki": [
+     "medium"
+    ]
+   }
+  },
+  "uk": {
+   "uk_UA": {
+    "ukrainian_tts": [
+     "medium"
+    ]
+   }
+  },
+  "ur": {
+   "ur_PK": {
+    "fasih": [
+     "medium"
+    ]
+   }
+  },
+  "vi": {
+   "vi_VN": {
+    "vais1000": [
+     "medium"
+    ]
+   }
+  },
+  "zh": {
+   "zh_CN": {
+    "chaowen": [
+     "medium"
+    ],
+    "huayan": [
+     "medium"
+    ],
+    "xiao_ya": [
+     "medium"
+    ]
+   }
+  }
+ },
+ "repo": "rhasspy/piper-checkpoints"
+}

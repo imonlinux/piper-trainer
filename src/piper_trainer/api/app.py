@@ -1,0 +1,416 @@
+"""FastAPI application — Bones, design doc §6.1 / §9.1.
+
+A thin layer over the existing `piper_trainer.*` functions plus the job
+manager. Everything long-running is a job; validation is synchronous
+because it is fast and the UI wants it inline.
+
+Run: uvicorn piper_trainer.api.app:app --host 127.0.0.1 --port 8000
+(PIPER_WORKSPACE selects the volume; bind localhost only — no auth in v1,
+design doc §7.)
+"""
+from __future__ import annotations
+
+import csv
+import re
+import shutil
+import subprocess
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import (FastAPI, File, HTTPException, UploadFile, WebSocket,
+                     WebSocketDisconnect)
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from .. import doctor, prepare
+from ..config import Project, TIERS
+from . import catalog, settings
+from .jobs import JobError, JobManager
+
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus"}
+UI_DIR = Path(__file__).resolve().parents[1] / "ui"
+
+
+class ProjectCreate(BaseModel):
+    name: str
+    espeak_voice: str | None = None
+    tier: str | None = None
+    catalog_path: str | None = None
+
+
+class JobCreate(BaseModel):
+    kind: str
+    stage: str | None = None
+    params: dict = {}
+
+
+class FetchCreate(BaseModel):
+    catalog_path: str
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def create_app(workspace: Path | None = None,
+               runner_cmd=None) -> FastAPI:
+    """runner_cmd is a test seam: the command the job manager executes for
+    one job. Production uses `python -m piper_trainer.api.runner <job-dir>`."""
+    ws_root = Path(workspace) if workspace else settings.workspace()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        kwargs = {"allow_parallel": settings.allow_parallel(),
+                  "cancel_grace": settings.cancel_grace()}
+        if runner_cmd is not None:
+            kwargs["runner_cmd"] = runner_cmd
+        manager = JobManager(ws_root, **kwargs)
+        manager.rescan()
+        app.state.manager = manager
+        app.state.workspace = ws_root
+        yield
+        for t in list(manager._tasks):
+            t.cancel()
+
+    app = FastAPI(title="piper-trainer", version=settings.version(),
+                  lifespan=lifespan)
+
+    # ------------------------------------------------------------ helpers
+
+    def manager() -> JobManager:
+        return app.state.manager
+
+    def project_or_404(project_id: str) -> Project:
+        if not NAME_RE.match(project_id):
+            raise HTTPException(400, f"invalid project id {project_id!r}")
+        root = ws_root / project_id
+        if not (root / "project.json").exists():
+            raise HTTPException(404, f"no such project: {project_id}")
+        return Project.load(root)
+
+    def job_or_404(job_id: str) -> dict:
+        try:
+            return manager().get(job_id)
+        except JobError:
+            raise HTTPException(404, f"no such job: {job_id}") from None
+
+    def project_stats(root: Project) -> dict:
+        clips = len(list(root.wavs.glob("*.wav"))) if root.wavs.exists() else 0
+        minutes = None
+        if root.audit.exists():
+            total = 0.0
+            try:
+                with root.audit.open(newline="") as fh:
+                    rdr = csv.reader(fh)
+                    next(rdr, None)  # header: clip, duration, cps, prob, text
+                    for row in rdr:
+                        try:
+                            total += float(row[1])
+                        except (ValueError, IndexError):
+                            continue
+                minutes = round(total / 60, 1)
+            except OSError:
+                pass
+        tiers_trained = sorted(
+            t for t in TIERS if (root.root / f"runs-{t}").exists())
+        jobs = manager().list_for_project(root.root)
+        last = {"id": jobs[0]["id"], "kind": jobs[0]["kind"],
+                "state": jobs[0]["state"]} if jobs else None
+        return {"name": root.name, "path": str(root.root), "clips": clips,
+                "minutes": minutes, "tiers_trained": tiers_trained,
+                "last_job": last}
+
+    # -------------------------------------------------------------- system
+
+    @app.get("/api/health")
+    def health():
+        return {"ok": True, "version": settings.version()}
+
+    @app.get("/api/doctor")
+    def doctor_json():
+        lines, ok = doctor.check()
+        checks = []
+        for line in lines:
+            if line.startswith("✓ "):
+                status, message = "ok", line[2:]
+            elif line.startswith("✗ "):
+                status, message = "error", line[2:]
+            else:
+                status, message = "info", line[2:] if line[:2] in ("· ",
+                                                                   "  ") \
+                    else line
+            checks.append({"status": status, "message": message})
+        # §3.8: report the transcription capability so the UI does not have
+        # to infer it (CTranslate2 has a CUDA backend and no ROCm backend)
+        devices = ["cpu"]
+        try:
+            import torch
+            if torch.cuda.is_available() and not getattr(torch.version,
+                                                         "hip", None):
+                devices.append("cuda")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": ok, "checks": checks,
+                "transcribe_devices": devices}
+
+    @app.get("/api/espeak-voices")
+    def espeak_voices(prefix: str = ""):
+        try:
+            return doctor.espeak_voices(prefix)
+        except (FileNotFoundError, RuntimeError, subprocess.CalledProcessError):
+            return []  # doctor reports the missing or failing binary
+
+    @app.get("/api/tiers")
+    def tiers():
+        return TIERS
+
+    # ------------------------------------------------------------ projects
+
+    @app.get("/api/projects")
+    def list_projects():
+        out = []
+        for d in manager().projects():
+            try:
+                out.append(project_stats(Project.load(d)))
+            except Exception:  # noqa: BLE001 — one bad dir must not kill the list
+                continue
+        return out
+
+    @app.post("/api/projects", status_code=201)
+    def create_project(body: ProjectCreate):
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", body.name).strip("._")
+        if not name:
+            raise HTTPException(400, "project name normalizes to empty")
+        root = ws_root / name
+        if root.exists():
+            raise HTTPException(409, f"already exists: {name}")
+        proj = Project(root=root, name=name)
+        proj.ensure()
+        proj.set(name=name, espeak_voice=body.espeak_voice,
+                 tier=body.tier, catalog_path=body.catalog_path)
+        return project_stats(proj)
+
+    @app.get("/api/projects/{project_id}")
+    def project_detail(project_id: str):
+        proj = project_or_404(project_id)
+
+        def count(d: Path) -> int:
+            return len(list(d.glob("*"))) if d.exists() else 0
+
+        rows, problems = [], []
+        endings = None
+        if proj.metadata.exists():
+            from .. import metadata as metadata_mod
+            rows, problems = metadata_mod.read(proj.metadata)
+            endings = metadata_mod.line_endings(proj.metadata)
+        return {
+            **project_stats(proj),
+            "config": {k: proj.get(k) for k in
+                       ("espeak_voice", "tier", "catalog_path",
+                        "target_epochs", "transcripts_provided")},
+            "directories": {
+                "raw": count(proj.raw),
+                "work/48k": count(proj.work48k),
+                "work/denoised": count(proj.denoised),
+                "work/clips": count(proj.clips),
+                "dataset/wavs": count(proj.wavs),
+                "dataset/quarantine": count(
+                    proj.dataset / "quarantine"),
+            },
+            "dataset": {
+                "rows": len(rows),
+                "malformed_lines": len(problems),
+                "line_endings": endings,
+            },
+            "voices": sorted(p.stem for p in proj.out.glob("*.onnx"))
+            if proj.out.exists() else [],
+            "checkpoints": local_checkpoints(proj),
+            "jobs": manager().list_for_project(proj.root)[:10],
+        }
+
+    @app.delete("/api/projects/{project_id}")
+    def delete_project(project_id: str):
+        proj = project_or_404(project_id)
+        running = [j for j in manager().list_for_project(proj.root)
+                   if j["state"] in ("running", "queued")]
+        if running:
+            raise HTTPException(409, "project has active jobs: "
+                                + ", ".join(j["id"] for j in running))
+        trash = ws_root / ".trash"
+        trash.mkdir(exist_ok=True)
+        dest = trash / f"{project_id}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+        # §0: nothing is destroyed — the directory is moved aside, never rm'd
+        shutil.move(str(proj.root), dest)
+        return {"moved_to": str(dest)}
+
+    @app.get("/api/projects/{project_id}/files/{path:path}")
+    def project_file(project_id: str, path: str):
+        proj = project_or_404(project_id)
+        full = (proj.root / path).resolve()
+        root = proj.root.resolve()
+        if not str(full).startswith(str(root) + "/"):
+            raise HTTPException(400, "path escapes the project")
+        if full.suffix.lower() not in AUDIO_EXT or not full.is_file():
+            raise HTTPException(404, "not a project audio file")
+        return FileResponse(full)
+
+    @app.get("/api/projects/{project_id}/sources")
+    def project_sources(project_id: str):
+        proj = project_or_404(project_id)
+        return prepare.sources(proj)
+
+    # -------------------------------------------------------------- ingest
+
+    @app.post("/api/projects/{project_id}/ingest", status_code=202)
+    async def ingest(project_id: str,
+                     files: list[UploadFile] = File(...)):
+        proj = project_or_404(project_id)
+        if not files:
+            raise HTTPException(400, "no files uploaded")
+        job = await manager().submit(proj.root, "ingest",
+                                     params={"source_type": "upload"})
+        job_dir = manager().job_dir(job["id"])
+        incoming = job_dir / "incoming"
+        incoming.mkdir()
+        for f in files:
+            dest = incoming / Path(f.filename or "unnamed").name
+            with dest.open("wb") as out:
+                while chunk := await f.read(1 << 20):
+                    out.write(chunk)
+        return job
+
+    # ---------------------------------------------------------------- jobs
+
+    @app.post("/api/projects/{project_id}/jobs", status_code=202)
+    async def create_job(project_id: str, body: JobCreate):
+        proj = project_or_404(project_id)
+        try:
+            return await manager().submit(proj.root, body.kind,
+                                          stage=body.stage,
+                                          params=body.params)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get("/api/projects/{project_id}/jobs")
+    def list_jobs(project_id: str):
+        proj = project_or_404(project_id)
+        return manager().list_for_project(proj.root)
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str):
+        return job_or_404(job_id)
+
+    @app.get("/api/jobs/{job_id}/log")
+    def job_log(job_id: str):
+        job_or_404(job_id)
+        return PlainTextResponse(manager().log(job_id))
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str):
+        job_or_404(job_id)
+        try:
+            return await manager().cancel(job_id)
+        except JobError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post("/api/jobs/{job_id}/start")
+    async def start_job(job_id: str):
+        job_or_404(job_id)
+        try:
+            return await manager().start(job_id)
+        except JobError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.websocket("/api/jobs/{job_id}/stream")
+    async def stream_job(ws: WebSocket, job_id: str):
+        try:
+            manager().job_dir(job_id)
+        except JobError:
+            await ws.close(code=4404)
+            return
+        await ws.accept()
+        q = manager().subscribe(job_id)
+        try:
+            await ws.send_json({"type": "state", "job": manager().get(job_id)})
+            await ws.send_json({"type": "log_reset",
+                                "text": manager().log(job_id)})
+            while True:
+                event = await q.get()
+                await ws.send_json(event)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            manager().unsubscribe(job_id, q)
+
+    # ---------------------------------------------------------- checkpoints
+
+    @app.get("/api/checkpoints/catalog")
+    def checkpoints_catalog():
+        return catalog.catalog()
+
+    @app.get("/api/checkpoints/catalog/{path:path}")
+    def checkpoints_detail(path: str):
+        try:
+            return catalog.detail(path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except KeyError:
+            raise HTTPException(404, f"not in catalog: {path}") from None
+
+    @app.post("/api/projects/{project_id}/checkpoints/fetch",
+              status_code=202)
+    async def fetch_checkpoint(project_id: str, body: FetchCreate):
+        proj = project_or_404(project_id)
+        return await manager().submit(
+            proj.root, "fetch-checkpoint",
+            params={"catalog_path": body.catalog_path})
+
+    def local_checkpoints(proj: Project) -> list[dict]:
+        out = []
+        for path, entry in (proj.get("base_checkpoints") or {}).items():
+            out.append({"source": "catalog", "catalog_path": path,
+                        "dir": entry.get("dir"),
+                        "files": entry.get("files"),
+                        "fetched_at": entry.get("fetched_at")})
+        for tier in TIERS:
+            runs = proj.root / f"runs-{tier}"
+            if not runs.exists():
+                continue
+            for ckpt in sorted(runs.glob(
+                    "lightning_logs/version_*/checkpoints/*.ckpt")):
+                epoch = None
+                try:
+                    from .. import train as train_mod
+                    epoch = train_mod.checkpoint_epoch(ckpt)
+                except Exception:  # noqa: BLE001 — torch may be absent
+                    pass
+                out.append({"source": "run", "tier": tier,
+                            "path": str(ckpt.relative_to(proj.root)),
+                            "name": ckpt.name, "epoch": epoch,
+                            "mtime": datetime.fromtimestamp(
+                                ckpt.stat().st_mtime,
+                                tz=timezone.utc).strftime(
+                                "%Y-%m-%dT%H:%M:%SZ")})
+        return out
+
+    @app.get("/api/projects/{project_id}/checkpoints")
+    def project_checkpoints(project_id: str):
+        return local_checkpoints(project_or_404(project_id))
+
+    # --------------------------------------------------------------- static
+
+    @app.get("/")
+    def index():
+        return RedirectResponse("/ui/")
+
+    if UI_DIR.exists():
+        app.mount("/ui", StaticFiles(directory=UI_DIR, html=True),
+                  name="ui")
+
+    return app
+
+
+app = create_app()
