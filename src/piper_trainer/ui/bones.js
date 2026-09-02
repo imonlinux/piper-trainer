@@ -261,20 +261,25 @@ async function preparePage(name) {
   // -- sweep (grouped by stage, newest first)
   const segWrap = el("div", {});
   const dnWrap = el("div", {});
-  const clipWrap = el("div", {});
+  const clipEmpty = () =>
+    el("p", { class: "muted" }, "click a preview id below to inspect its clips here");
+  const clipWrap = el("div", {}, clipEmpty());
   const fileUrl = (row, f) =>
     `/api/projects/${name}/files/${row.dir}/${encodeURIComponent(f)}`;
 
   function selectPreview(row) {
     selected = row;
-    draw();
     const clips = (row.result.audio || []).map(f =>
       el("div", { class: "cell" }, f,
         el("audio", { controls: "", src: fileUrl(row, f), style: "width:100%" })));
-    const tot = row.result.clip_count;
+    const head = row.stage === "denoise"
+      ? `denoise A/B from ${row.id} (original vs denoised, ${row.result.seconds ?? "?"}s)`
+      : `clips from ${row.id} (${row.result.clip_count ?? "?"} total, `
+        + `first ${clips.length} playable)`;
     clipWrap.replaceChildren(
-      el("h3", {}, `clips from ${row.id} (${tot} total, first ${clips.length} playable)`),
+      el("h3", {}, head),
       el("div", { class: "grid" }, ...clips));
+    draw();   // players first: a draw failure must never eat them
   }
 
   async function promote(row) {
@@ -333,7 +338,10 @@ async function preparePage(name) {
       ? sweepTable(dn, "denoise") : el("p", { class: "muted" }, "no denoise previews yet"));
     if (dn.length) {   // denoise A/B: players right in the sweep
       dnWrap.append(el("div", { class: "grid" }, ...dn.slice(0, 3).map(row =>
-        el("div", { class: "cell" }, row.id,
+        el("div", { class: "cell" },
+          el("a", { href: "#", onclick: (e) => {
+            e.preventDefault(); selectPreview(row);
+          } }, row.id),
           ...(row.result.audio || []).map(f =>
             el("audio", { controls: "", src: fileUrl(row, f),
                           style: "width:100%" }))))));
@@ -345,7 +353,7 @@ async function preparePage(name) {
     if (!confirm("Delete all previews? They are freely discardable.")) return;
     await api(`/projects/${name}/previews`, { method: "DELETE" }).catch(() => {});
     selected = null;
-    clipWrap.replaceChildren();
+    clipWrap.replaceChildren(clipEmpty());
     await loadSweep();
   }
 
@@ -370,7 +378,8 @@ async function preparePage(name) {
       el("button", { onclick: runDenoisePreview, disabled: srcs.length ? null : "" },
         "preview denoise A/B"),
       msg),
-    el("div", {}, clipWrap),
+    el("h2", {}, "Clips"),
+    clipWrap,
     el("h2", {}, "Segment sweep"),
     segWrap,
     el("h2", {}, "Denoise A/B"),
@@ -441,7 +450,11 @@ async function projectPage(name) {
         log.textContent += msg.line + "\n";
         log.scrollTop = log.scrollHeight;
       } else if (msg.type === "state") {
-        renderJobs([msg.job], false);
+        // Update the watched job in place; the table keeps every other row.
+        const i = jobsCache.findIndex(j => j.id === msg.job.id);
+        if (i >= 0) jobsCache[i] = msg.job;
+        else jobsCache.unshift(msg.job);
+        renderJobs(jobsCache.slice(0, 10), false);
         const prog = msg.job.progress;
         progSpan.textContent = prog && prog.total
           ? `epoch ${prog.current}/${prog.total}` : "";
@@ -495,6 +508,8 @@ async function projectPage(name) {
       location.hash = "#/projects";
     } catch (ex) { deleteErr.textContent = String(ex); }
   }
+
+  let jobsCache = Array.isArray(p.jobs) ? p.jobs : [];
 
   // Design doc §1.4: never expose the absolute max_epochs ceiling. A tier
   // with no checkpoint asks for epochs (submitted as max_epochs); a trained
@@ -550,8 +565,8 @@ async function projectPage(name) {
       el("button", {}, "delete (moves to .trash)"), deleteErr));
 
   function render() { projectPage(name); }
-  renderJobs(p.jobs);
-  const running = p.jobs.find(j => j.state === "running");
+  renderJobs(jobsCache);
+  const running = jobsCache.find(j => j.state === "running");
   if (running) watch(running.id);
 
   clearInterval(pollTimer);
@@ -559,6 +574,7 @@ async function projectPage(name) {
     if (ws) return; // the websocket already carries live state
     try {
       const jobs = await api(`/projects/${name}/jobs`);
+      jobsCache = jobs;
       renderJobs(jobs.slice(0, 10));
     } catch {}
   }, 2000);
