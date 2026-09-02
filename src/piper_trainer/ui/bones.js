@@ -136,6 +136,247 @@ async function doctorPage() {
       el("td", {}, c.message)))));
 }
 
+// ------------------------------------------------------- prepare tuner (§6.2)
+
+// The screen that justifies the UI: waveform of one source with detected
+// regions overlaid, sliders for the VAD parameters, each run producing a
+// sweep entry the user can compare and promote to a full prepare run.
+
+function drawWave(cv, data, regions) {
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#f8f8f8";
+  ctx.fillRect(0, 0, W, H);
+  if (!data) return;
+  const dur = data.duration || 1;
+  const n = data.peaks.length;
+  const bw = W / n;
+  ctx.fillStyle = "#888";
+  for (let i = 0; i < n; i++) {
+    const h = Math.max(1, data.peaks[i] * (H - 10));
+    ctx.fillRect(i * bw, (H - h) / 2, Math.max(1, bw), h);
+  }
+  for (const r of regions) {            // detected speech regions
+    const x0 = (r.start / dur) * W, x1 = (r.end / dur) * W;
+    ctx.fillStyle = "rgba(35, 134, 54, 0.22)";
+    ctx.fillRect(x0, 0, x1 - x0, H);
+    ctx.strokeStyle = "#22863a";
+    ctx.strokeRect(x0 + 0.5, 0.5, x1 - x0 - 1, H - 1);
+  }
+}
+
+async function preparePage(name) {
+  const srcs = await api(`/projects/${name}/sources`);
+  const err = el("p", { class: "error" });
+
+  // -- channel picker (a blind downmix can halve SNR on a bad channel)
+  let channel = "downmix";
+  const chRadios = ["downmix", "left", "right"].map(c =>
+    el("label", { class: "inline" },
+      el("input", { type: "radio", name: "chan", value: c,
+                    checked: c === "downmix",
+                    onchange: () => { channel = c; loadPeaks(); } }), c));
+
+  // -- source select
+  const srcSel = el("select", {
+    onchange: () => loadPeaks(),
+  }, ...srcs.map(s => {
+    const o = el("option", { value: s.name }, s.name);
+    return o;
+  }));
+
+  // -- VAD parameter sliders
+  const SLIDERS = [
+    ["energy_threshold", "energy threshold", 20, 90, 1, 55],
+    ["min_dur", "min duration (s)", 0.5, 5, 0.1, 1.5],
+    ["max_dur", "max duration (s)", 2, 20, 0.5, 10],
+    ["max_silence", "max silence (s)", 0.1, 1.5, 0.05, 0.4],
+    ["pad", "pad (s)", 0, 0.5, 0.01, 0.15],
+  ];
+  const sliders = {};
+  const sliderRows = SLIDERS.map(([key, label, min, max, step, dflt]) => {
+    const val = el("span", { class: "muted" }, String(dflt));
+    const input = el("input", {
+      type: "range", min: String(min), max: String(max), step: String(step),
+      value: String(dflt), style: "width:14em",
+      oninput: () => { val.textContent = input.value; },
+    });
+    sliders[key] = input;
+    return el("label", { class: "inline" }, label, input, val);
+  });
+  const dnChk = el("input", { type: "checkbox", checked: true });
+
+  function tunerParams() {
+    const p = { source: srcSel.value, channel,
+                denoise: dnChk.checked };
+    for (const [key] of SLIDERS) p[key] = parseFloat(sliders[key].value);
+    return p;
+  }
+
+  // -- waveform
+  const cv = el("canvas", { width: "1000", height: "160",
+                            style: "width:100%" });
+  let peaksData = null;
+  let selected = null;   // the sweep entry whose regions/clips are shown
+
+  async function loadPeaks() {
+    selected = null;
+    peaksData = await api(`/projects/${name}/sources/${encodeURIComponent(srcSel.value)}/peaks?channel=${channel}&buckets=2000`).catch(() => null);
+    draw();
+  }
+  function draw() {
+    drawWave(cv, peaksData, selected && selected.result.clips
+             ? selected.result.clips : []);
+  }
+
+  // -- preview actions
+  async function runSegmentPreview() {
+    err.textContent = "";
+    try {
+      await api(`/projects/${name}/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: "segment", params: tunerParams() }),
+      });
+      msg.textContent = "segment preview queued\u2026";
+    } catch (ex) { err.textContent = String(ex); }
+  }
+  async function runDenoisePreview() {
+    err.textContent = "";
+    try {
+      await api(`/projects/${name}/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: "denoise",
+                               params: { source: srcSel.value, channel,
+                                         seconds: 25 } }),
+      });
+      msg.textContent = "denoise preview queued\u2026";
+    } catch (ex) { err.textContent = String(ex); }
+  }
+  const msg = el("span", { class: "muted" });
+
+  // -- sweep (grouped by stage, newest first)
+  const segWrap = el("div", {});
+  const dnWrap = el("div", {});
+  const clipWrap = el("div", {});
+  const fileUrl = (row, f) =>
+    `/api/projects/${name}/files/${row.dir}/${encodeURIComponent(f)}`;
+
+  function selectPreview(row) {
+    selected = row;
+    draw();
+    const clips = (row.result.audio || []).map(f =>
+      el("div", { class: "cell" }, f,
+        el("audio", { controls: "", src: fileUrl(row, f), style: "width:100%" })));
+    const tot = row.result.clip_count;
+    clipWrap.replaceChildren(
+      el("h3", {}, `clips from ${row.id} (${tot} total, first ${clips.length} playable)`),
+      el("div", { class: "grid" }, ...clips));
+  }
+
+  async function promote(row) {
+    err.textContent = "";
+    if (!confirm(`Run the full prepare with these parameters?\n${JSON.stringify(row.params)}`)) return;
+    try {
+      await api(`/projects/${name}/previews/${row.id}/promote`,
+                { method: "POST" });
+      msg.textContent = "full prepare queued from promoted parameters";
+    } catch (ex) { err.textContent = String(ex); }
+  }
+
+  function sweepTable(rows, kind) {
+    const tbl = el("table", {},
+      el("tr", {}, ...["id", "params", kind === "segment" ? "clips" : "seconds",
+                       "histogram", ""].map(h => el("th", {}, h))));
+    for (const row of rows) {
+      const p = row.params || {};
+      const sum = `${p.source || "?"} \u00b7 ${p.channel || "downmix"}`
+        + (kind === "segment"
+           ? ` \u00b7 energy ${p.energy_threshold} \u00b7 dn ${p.denoise !== false}`
+           : ` \u00b7 ${p.seconds}s`);
+      const hist = (row.result.histogram || []).map(h =>
+        `${h.from}-${h.to}s: ${h.count}`).join(", ");
+      tbl.append(el("tr", {},
+        el("td", {},
+          el("a", { href: "#", onclick: (e) => {
+            e.preventDefault(); selectPreview(row);
+          } }, row.id)),
+        el("td", {}, sum),
+        el("td", { class: "num" }, String(row.result[kind === "segment"
+          ? "clip_count" : "seconds"] ?? "")),
+        el("td", {}, kind === "segment" ? hist : ""),
+        el("td", {},
+          kind === "segment"
+            ? el("button", { onclick: () => promote(row) }, "promote")
+            : null)));
+    }
+    return tbl;
+  }
+
+  async function loadSweep() {
+    const rows = await api(`/projects/${name}/previews`).catch(() => []);
+    const seg = rows.filter(r => r.stage === "segment");
+    const dn = rows.filter(r => r.stage === "denoise");
+    segWrap.replaceChildren(seg.length
+      ? sweepTable(seg, "segment") : el("p", { class: "muted" }, "no segment previews yet"));
+    dnWrap.replaceChildren(dn.length
+      ? sweepTable(dn, "denoise") : el("p", { class: "muted" }, "no denoise previews yet"));
+    if (dn.length) {   // denoise A/B: players right in the sweep
+      dnWrap.append(el("div", { class: "grid" }, ...dn.slice(0, 3).map(row =>
+        el("div", { class: "cell" }, row.id,
+          ...(row.result.audio || []).map(f =>
+            el("audio", { controls: "", src: fileUrl(row, f),
+                          style: "width:100%" }))))));
+    }
+    if (!selected && seg.length) selectPreview(seg[0]);  // newest by default
+  }
+
+  async function prune() {
+    if (!confirm("Delete all previews? They are freely discardable.")) return;
+    await api(`/projects/${name}/previews`, { method: "DELETE" }).catch(() => {});
+    selected = null;
+    clipWrap.replaceChildren();
+    await loadSweep();
+  }
+
+  main().replaceChildren(
+    el("h1", {}, `Prepare tuner \u2014 ${name}`),
+    el("p", { class: "muted" },
+      "adjust the VAD dials, preview against one source, promote the winner ",
+      el("a", { href: `#/project/${name}` }, "back to project")),
+    err,
+    el("h2", {}, "Source"),
+    el("div", { class: "row" }, srcSel, ...chRadios),
+    srcs.length ? el("div", {}, cv)
+      : el("p", { class: "muted" }, "no sources \u2014 upload audio on the project page first"),
+    el("h2", {}, "VAD parameters"),
+    el("div", { class: "row", style: "flex-wrap:wrap" }, ...sliderRows,
+      el("label", { class: "inline", title: "the full pipeline denoises "
+                   + "before segmenting; previews should judge the same audio" },
+        dnChk, "denoise first")),
+    el("div", { class: "row" },
+      el("button", { onclick: runSegmentPreview, disabled: srcs.length ? null : "" },
+        "preview segment"),
+      el("button", { onclick: runDenoisePreview, disabled: srcs.length ? null : "" },
+        "preview denoise A/B"),
+      msg),
+    el("div", {}, clipWrap),
+    el("h2", {}, "Segment sweep"),
+    segWrap,
+    el("h2", {}, "Denoise A/B"),
+    dnWrap,
+    el("p", {}, el("button", { onclick: prune }, "prune all previews")));
+
+  if (srcs.length) await loadPeaks();
+  await loadSweep();
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try { await loadSweep(); } catch {}
+  }, 2000);
+}
+
 async function projectPage(name) {
   const p = await api(`/projects/${name}`);
   const cells = Object.entries(p.directories).map(([k, v]) =>
@@ -281,6 +522,8 @@ async function projectPage(name) {
     el("form", { onsubmit: doUpload, class: "row" }, upload,
       el("button", { type: "submit" }, "upload"), uploadErr),
     el("h2", {}, "Jobs"),
+    el("p", {}, el("a", { href: `#/prepare/${name}` },
+      "prepare tuner (segment preview + promote)")),
     el("div", { class: "row" },
       el("button", { onclick: () => runJob("prepare") }, "run prepare"),
       el("button", { onclick: () => runJob("transcribe") }, "run transcribe"),
@@ -325,6 +568,7 @@ async function route() {
     else if (h === "#/new") await newProjectPage();
     else if (h === "#/doctor") await doctorPage();
     else if (h.startsWith("#/project/")) await projectPage(h.slice(10));
+    else if (h.startsWith("#/prepare/")) await preparePage(h.slice(10));
     else await projectsPage();
   } catch (ex) {
     main().replaceChildren(el("p", { class: "error" }, String(ex)));
