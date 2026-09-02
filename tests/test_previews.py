@@ -72,23 +72,6 @@ def segment_stubs(monkeypatch):
     monkeypatch.setattr(prepare, "split_audio", fake_split)
     return boundaries
 
-    boundaries = [(0.0, 2.0), (2.5, 4.5), (5.0, 7.0),
-                  (8.0, 15.0), (16.0, 28.0)]
-
-    def fake_split(src, out_dir, stem=None, **kwargs):
-        out_dir.mkdir(parents=True, exist_ok=True)
-        clips = []
-        for i, (s, e) in enumerate(boundaries, start=1):
-            name = f"{stem or src.stem}_{i:04d}_{s:.3f}-{e:.3f}.wav"
-            (out_dir / name).write_bytes(b"RIFF-clip")
-            clips.append({"clip": name, "start": s, "end": e})
-        return clips
-
-    monkeypatch.setattr(prepare, "convert_one", fake_convert)
-    monkeypatch.setattr(prepare, "denoise_file", fake_denoise)
-    monkeypatch.setattr(prepare, "split_audio", fake_split)
-    return boundaries
-
 
 # ------------------------------------------------------------------ segment
 
