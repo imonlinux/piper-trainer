@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # piper-trainer launcher.
 #
+#   ./run.sh build                        # build the VARIANT image
+#   ./run.sh build --no-cache             # extra args pass through to the build
 #   ./run.sh doctor
 #   ./run.sh init /workspace/marvin --name marvin
 #   ./run.sh prepare /workspace/marvin --tier medium
@@ -22,6 +24,8 @@
 #   IMAGE      override the full image reference
 #   ENGINE     podman | docker                         (default: autodetect)
 #   API_PORT   host port for `serve`                   (default: 8000)
+#   ROCM_TORCH_VERSION   torch pin for `build`         (default: 2.10.0; must
+#                        exist on the rolling gfx1151 index — see Dockerfile)
 #   SHELL_IN   set to 1 to drop into a shell instead of running the CLI
 
 set -euo pipefail
@@ -35,6 +39,25 @@ if [[ -z "${ENGINE:-}" ]]; then
     elif command -v docker >/dev/null 2>&1; then ENGINE=docker
     else echo "need podman or docker on PATH" >&2; exit 1
     fi
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ----------------------------------------------------------------- build
+# `./run.sh build` maps VARIANT to the right index + pin. Only ROCm needs
+# explicit build args: the Dockerfile defaults already match CUDA/CPU
+# (2.6.0 on cu124/cpu), while the rolling gfx1151 nightly index carries
+# different generations entirely (see the torch-layer NOTE in the
+# Dockerfile). The pin here mirrors docker-compose.yml's rocm profile.
+if [[ "${1:-}" == "build" ]]; then
+    shift
+    bargs=()
+    if [[ "$VARIANT" == "rocm" ]]; then
+        bargs+=(
+            --build-arg "TORCH_INDEX_URL=${ROCM_TORCH_INDEX_URL:-https://rocm.nightlies.amd.com/v2/gfx1151/}"
+            --build-arg "TORCH_VERSION=${ROCM_TORCH_VERSION:-2.10.0}")
+    fi
+    exec "$ENGINE" build "${bargs[@]}" -t "$IMAGE" "$@" "$SCRIPT_DIR"
 fi
 
 mkdir -p "$WORKSPACE"

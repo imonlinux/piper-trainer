@@ -39,6 +39,14 @@ environment.
 
 ## Build
 
+`./run.sh build` builds the current `VARIANT` (default rocm) with the right index and pin — extra args pass through (`./run.sh build --no-cache`, `--pull`):
+
+```bash
+./run.sh build
+```
+
+Compose profiles and raw builds work too:
+
 ```bash
 # NVIDIA
 docker compose --profile cuda build
