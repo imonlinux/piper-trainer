@@ -7,7 +7,10 @@
 #
 # Build (AMD Strix Halo / gfx1151):
 #   docker build -t piper-trainer:rocm \
-#     --build-arg TORCH_INDEX_URL=https://rocm.nightlies.amd.com/v2/gfx1151/ .
+#     --build-arg TORCH_INDEX_URL=https://rocm.nightlies.amd.com/v2/gfx1151/ \
+#     --build-arg TORCH_VERSION=2.10.0 .
+# (docker compose --profile rocm passes both args; a raw build must pass
+#  them itself — the default TORCH_VERSION is the CUDA/CPU index's pin.)
 #
 # Torch wheels from both indexes bundle their own accelerator runtime
 # (nvidia-* packages / _rocm_sdk_libraries_gfx1151), so a plain Python base
@@ -18,7 +21,9 @@ FROM python:3.12-slim-bookworm
 # ---------------------------------------------------------------- build args
 # Pinned by default so a --no-cache rebuild reproduces the same stack:
 #   PIPER_REF      v1.7.0 tag (was: main, which floated across releases)
-#   TORCH_VERSION  2.6.0, the version verified on this stack
+#   TORCH_VERSION  2.6.0, the version verified on the CUDA (cu124) and CPU
+#                  indexes. ROCm builds MUST override it — see the note at
+#                  the torch layer below.
 # Override with --build-arg only when you deliberately want to move.
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
 ARG TORCH_VERSION=2.6.0
@@ -63,9 +68,17 @@ RUN curl -fsSL -o /usr/local/bin/deep-filter \
 # Exact pin first, prefix match second (the pytorch indexes use local
 # version labels like 2.6.0+cu124). If neither resolves the build fails
 # HERE rather than floating; the stamp + smoke test below re-assert it.
-# NOTE: the pin is index-specific — the ROCm nightly index carries
-# different version strings, so a ROCm build passes its own
-# --build-arg TORCH_VERSION=<nightly version>.
+# NOTE: the pin is index-specific. The gfx1151 index is a ROLLING nightly
+# that already dropped 2.6.0 (oldest live generation is 2.7.1), so ROCm
+# builds pass --build-arg TORCH_VERSION=2.10.0 — the pin the rocm compose
+# profile carries. Resolution relies on two PEP 440 wrinkles:
+#   - torch==2.10.0 matches the index's 2.10.0+rocm* finals (a pin with
+#     no local label ignores the candidate's);
+#   - torchaudio only ships there as 2.10.0a0+rocm*, which ==2.10.0.*
+#     picks up via the prefix fallback (pip allows prereleases when they
+#     are the only match).
+# When AMD rotates the index again the build fails HERE and pip's error
+# lists the surviving generations — bump the pin deliberately.
 RUN python3 -m pip install --index-url "${TORCH_INDEX_URL}" \
         "torch==${TORCH_VERSION}" "torchaudio==${TORCH_VERSION}" \
     || python3 -m pip install --index-url "${TORCH_INDEX_URL}" \

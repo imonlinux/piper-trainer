@@ -9,7 +9,7 @@ Existing Piper training GUIs wrap the **archived** `rhasspy/piper` toolchain. Th
 | Layer | Notes |
 |---|---|
 | Python 3.12 | 3.13/3.14 have no ROCm wheels and break dependency resolution |
-| torch | CUDA or ROCm gfx1151 via `TORCH_INDEX_URL` build arg; wheels bundle their own runtime |
+| torch | CUDA (cu124) or ROCm gfx1151 via `TORCH_INDEX_URL` + `TORCH_VERSION` build args; wheels bundle their own runtime |
 | piper1-gpl | with **both** C extensions actually built |
 | DeepFilterNet 3 | static musl binary, no Python deps |
 | auditok, faster-whisper, ffmpeg, espeak-ng | the dataset pipeline |
@@ -48,6 +48,14 @@ docker compose --profile rocm build
 
 # CPU fallback
 docker compose --profile cpu build
+```
+
+A raw `docker build` / `podman build` bypasses these profiles. The NVIDIA/CPU defaults are enough on their own, but an ROCm build must pass both args itself — the gfx1151 index is a rolling nightly that has already dropped older generations:
+
+```bash
+docker build -t piper-trainer:rocm \
+  --build-arg TORCH_INDEX_URL=https://rocm.nightlies.amd.com/v2/gfx1151/ \
+  --build-arg TORCH_VERSION=2.10.0 .
 ```
 
 ## Run
