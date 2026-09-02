@@ -282,7 +282,13 @@ The same pipeline functions the CLI calls, served over HTTP, with a job runner i
 
 ```bash
 pip install -e '.[api]'
-PIPER_WORKSPACE=/workspace uvicorn piper_trainer.api.app:app --port 8000
+piper-trainer serve                      # http://127.0.0.1:8000/
+```
+
+The training images carry the api runtime too, so the same thing works from the image (workspace and GPU passthrough come from compose):
+
+```bash
+docker compose --profile rocm run --rm --service-ports trainer-rocm serve --host 0.0.0.0
 ```
 
 The Bones UI is served at `/` — project list and detail, upload, checkpoint picker, run/cancel buttons, live log tail. It is deliberately ugly static HTML; React arrives with the segment tuner.

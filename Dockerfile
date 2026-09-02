@@ -149,6 +149,19 @@ RUN python3 -m pip install \
         soundfile \
         numpy
 
+# --------------------------------------------------- API server + Bones UI
+# The [api] extra's runtime deps, installed explicitly because the editable
+# install below uses --no-deps by design. The UI itself (src/piper_trainer/ui/)
+# needs no build step and ships with the COPY src above; serve it with:
+#   docker compose --profile rocm run --rm --service-ports trainer-rocm \
+#     serve --host 0.0.0.0
+RUN python3 -m pip install \
+        "fastapi>=0.110" \
+        "uvicorn>=0.29" \
+        "python-multipart>=0.0.9"
+
+EXPOSE 8000
+
 # --------------------------------------------------------- piper-trainer CLI
 COPY pyproject.toml /opt/piper-trainer/pyproject.toml
 COPY src /opt/piper-trainer/src
@@ -198,7 +211,9 @@ VOLUME ["/workspace"]
 RUN python3 -c "from piper import espeakbridge" \
     && python3 -c "from piper.train.vits.monotonic_align.monotonic_align.core import maximum_path_c" \
     && python3 -c "import torch, auditok, faster_whisper, lightning, onnxscript" \
-    && python3 -c "import piper.train.__main__"
+    && python3 -c "import piper.train.__main__" \
+    && python3 -c "import piper_trainer.api.app" \
+    && test -f /opt/piper-trainer/src/piper_trainer/ui/index.html
 
 ENTRYPOINT ["piper-trainer"]
 CMD ["doctor"]

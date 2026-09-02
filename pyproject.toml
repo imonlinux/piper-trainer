@@ -14,7 +14,7 @@ piper-trainer = "piper_trainer.cli:main"
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio", "httpx"]
 # API server + Bones UI. Kept out of the default install: the CLI stays
-# dependency-free and runs in images that never serve HTTP.
+# dependency-free (the training images install these explicitly).
 api = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
 # What the pipeline imports beyond the stdlib (soundfile and numpy arrive
 # transitively and are not declared). The SUPPORTED path is the container:

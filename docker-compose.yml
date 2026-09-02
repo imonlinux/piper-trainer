@@ -20,6 +20,9 @@ x-common: &common
   shm_size: "8gb"
   stdin_open: true
   tty: true
+  # used by `serve` (API + Bones UI); publish with --service-ports
+  ports:
+    - "${API_PORT:-8000}:8000"
 
 services:
   trainer-cuda:

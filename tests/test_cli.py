@@ -1,5 +1,6 @@
 """CLI-level tests: tier persistence and other argument resolution."""
 import json
+import sys
 from pathlib import Path
 
 from piper_trainer import cli
@@ -86,3 +87,23 @@ def test_validate_uses_saved_tier(tmp_path):
     assert rc == 1  # no metadata: error either way, but it must not crash
     # a low-tier project with a 22050 wav flags sample-rate only if the
     # saved tier is respected — covered by the rate check in validate tests
+
+
+def test_serve_runs_uvicorn(monkeypatch):
+    import uvicorn
+    calls = {}
+    monkeypatch.setattr(uvicorn, "run",
+                        lambda app, host, port: calls.update(
+                            app=app, host=host, port=port))
+    rc = cli.main(["serve", "--host", "0.0.0.0", "--port", "8123"])
+    assert rc == 0
+    assert calls["host"] == "0.0.0.0"
+    assert calls["port"] == 8123
+    assert calls["app"] is not None  # a real ASGI app from create_app()
+
+
+def test_serve_without_api_extra(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    rc = cli.main(["serve"])
+    assert rc == 2
+    assert "api extra" in capsys.readouterr().err

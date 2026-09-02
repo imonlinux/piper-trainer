@@ -236,6 +236,12 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--noise-w", type=float)
     add_lock(sp)
 
+    sp = sub.add_parser(
+        "serve", help="serve the API + Bones UI (needs the 'api' extra)")
+    sp.add_argument("--host", default="127.0.0.1",
+                    help="default: 127.0.0.1 (use 0.0.0.0 in a container)")
+    sp.add_argument("--port", type=int, default=8000)
+
     args = p.parse_args(argv)
 
     # ------------------------------------------------------------------ doctor
@@ -246,6 +252,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "voices":
         print("\n".join(doctor.espeak_voices(args.prefix)))
+        return 0
+
+    # ------------------------------------------------------------------ serve
+    if args.cmd == "serve":
+        try:
+            import uvicorn
+        except ImportError:
+            print("serve requires the api extra: pip install 'piper-trainer[api]'",
+                  file=sys.stderr)
+            return 2
+        from .api.app import create_app
+        uvicorn.run(create_app(), host=args.host, port=args.port)
         return 0
 
     proj = _project(args)
