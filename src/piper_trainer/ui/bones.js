@@ -276,9 +276,18 @@ async function preparePage(name) {
       ? `denoise A/B from ${row.id} (original vs denoised, ${row.result.seconds ?? "?"}s)`
       : `clips from ${row.id} (${row.result.clip_count ?? "?"} total, `
         + `first ${clips.length} playable)`;
+    // A segment preview that found nothing used to render a link with no
+    // feedback at all — say which dials to move instead.
+    const empty = row.stage === "segment" && row.result.clip_count === 0
+      ? el("p", { class: "notice" },
+          "0 clips: the splitter rejected every region. Lower the energy "
+        + "threshold, lower the min duration for short utterances, or pick "
+        + "left/right when only one channel has audio (downmix averages in "
+        + "the silent side). Then preview segment again.")
+      : null;
     clipWrap.replaceChildren(
       el("h3", {}, head),
-      el("div", { class: "grid" }, ...clips));
+      empty || el("div", { class: "grid" }, ...clips));
     draw();   // players first: a draw failure must never eat them
   }
 

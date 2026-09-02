@@ -78,7 +78,14 @@ def _prepare(project: Project, params: dict, emit) -> dict:
         max_silence=params.get("max_silence", 0.4),
         max_leading_silence=params.get("pad", 0.15),
         max_trailing_silence=params.get("pad", 0.15),
+        on_stage=lambda i, name: emit(
+            "PROGRESS", {"current": i, "total": 4, "unit": "stage"}),
     )
+    clips = stats.get("clips")
+    if isinstance(clips, int):
+        # current rides along so the union-merge in jobs.py doesn't leave
+        # the last stage count ("stage 4/4") bleeding into "clip N/M"
+        emit("TARGET", {"total": clips, "unit": "clip", "current": clips})
     return {"stats": stats}
 
 

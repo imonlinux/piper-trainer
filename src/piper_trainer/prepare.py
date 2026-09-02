@@ -352,13 +352,23 @@ def finalize(project: Project, tier: str = "medium",
 
 def run_all(project: Project, tier: str = "medium", channel: str | None = None,
             denoise_enabled: bool = True, force: bool = False,
-            **seg_kwargs) -> dict:
+            on_stage=None, **seg_kwargs) -> dict:
+    """Run the full pipeline. `on_stage(index, name)` — 1-based — lets job
+    runners surface per-stage progress without reaching into the stages."""
     project.ensure()
     stats: dict = {}
+    if on_stage:
+        on_stage(1, "convert")
     stats["converted"], renamed = to_48k(project, channel=channel, force=force)
     if renamed:
         stats["renamed"] = renamed
+    if on_stage:
+        on_stage(2, "denoise")
     stats["denoised"] = denoise(project, enabled=denoise_enabled, force=force)
+    if on_stage:
+        on_stage(3, "segment")
     stats["clips"] = segment(project, force=force, **seg_kwargs)
+    if on_stage:
+        on_stage(4, "finalize")
     stats["finalized"] = finalize(project, tier=tier, force=force)
     return stats
