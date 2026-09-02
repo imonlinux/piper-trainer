@@ -22,6 +22,7 @@ function el(tag, attrs = {}, ...children) {
     else if (k === "onchange") node.addEventListener("change", v);
     else if (k === "onsubmit") node.addEventListener("submit", v);
     else if (k === "class") node.className = v;
+    else if (v === false || v == null) {}   // boolean attribute absent
     else node.setAttribute(k, v);
   }
   for (const c of children) {
