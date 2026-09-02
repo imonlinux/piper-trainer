@@ -316,10 +316,17 @@ async function preparePage(name) {
     return tbl;
   }
 
+  let sweepFp = "";   // row ids seen last; rows are immutable once listed
+
   async function loadSweep() {
     const rows = await api(`/projects/${name}/previews`).catch(() => []);
     const seg = rows.filter(r => r.stage === "segment");
     const dn = rows.filter(r => r.stage === "denoise");
+    // Rebuilding this DOM mid-playback kills the denoise A/B <audio> nodes,
+    // so leave the sweep untouched unless the set of previews changed.
+    const fp = seg.map(r => r.id).join() + "|" + dn.map(r => r.id).join();
+    if (fp === sweepFp) return;
+    sweepFp = fp;
     segWrap.replaceChildren(seg.length
       ? sweepTable(seg, "segment") : el("p", { class: "muted" }, "no segment previews yet"));
     dnWrap.replaceChildren(dn.length
