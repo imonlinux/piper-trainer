@@ -488,6 +488,16 @@ def create_app(workspace: Path | None = None,
         app.mount("/ui", StaticFiles(directory=UI_DIR, html=True),
                   name="ui")
 
+        # Heuristic browser caching served stale bones.js after pulls, so a
+        # fixed UI looked unfixed. no-cache keeps the ETag 304 but forces a
+        # revalidation round-trip on every load.
+        @app.middleware("http")
+        async def revalidate_ui(request, call_next):
+            response = await call_next(request)
+            if request.url.path.startswith("/ui"):
+                response.headers["Cache-Control"] = "no-cache"
+            return response
+
     return app
 
 
