@@ -247,6 +247,21 @@ async function projectPage(name) {
     } catch (ex) { deleteErr.textContent = String(ex); }
   }
 
+  // Design doc §1.4: never expose the absolute max_epochs ceiling. A tier
+  // with no checkpoint asks for epochs (submitted as max_epochs); a trained
+  // tier asks for "N more" (submitted as add_epochs) so a resume can never
+  // set the ceiling below the restored epoch counter and exit instantly.
+  const tier = cfg.tier || "medium";
+  const trained = p.tiers_trained.includes(tier);
+  const epochs = el("input", { type: "number", min: "1",
+                               value: trained ? "1000" : "4000",
+                               style: "width:6em" });
+  async function doTrain() {
+    const n = parseInt(epochs.value, 10);
+    if (!n || n < 1) { uploadErr.textContent = "epochs must be a number >= 1"; return; }
+    await runJob("train", trained ? { add_epochs: n } : { max_epochs: n });
+  }
+
   main().replaceChildren(
     el("h1", {}, p.name),
     el("p", { class: "muted" },
@@ -266,6 +281,9 @@ async function projectPage(name) {
     el("div", { class: "row" },
       el("button", { onclick: () => runJob("prepare") }, "run prepare"),
       el("button", { onclick: () => runJob("transcribe") }, "run transcribe"),
+      el("label", { class: "inline" }, trained ? "epochs (more)" : "epochs",
+        epochs),
+      el("button", { onclick: doTrain }, trained ? "train N more" : "run train"),
       el("button", { onclick: () => runJob("export") }, "run export")),
     jobsWrap,
     log,

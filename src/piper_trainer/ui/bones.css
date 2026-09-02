@@ -40,4 +40,5 @@ pre.log {
 .error { color: #cb2431; }
 .ok { color: #22863a; }
 form.inline { display: inline; }
+label.inline { display: inline-flex; gap: 6px; align-items: center; margin: 0; font-weight: 400; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
