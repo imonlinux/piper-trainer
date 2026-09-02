@@ -25,6 +25,10 @@ from .config import Project, TIERS
 
 AUDIO_EXT = {".wav", ".mp4", ".m4a", ".mp3", ".flac", ".ogg", ".aac", ".webm", ".mkv"}
 
+# channel picker -> ffmpeg filter. Shared with peaks.py so the tuner's
+# waveform is decoded through the same channel choice the VAD will see.
+PAN = {"left": "pan=mono|c0=c0", "right": "pan=mono|c0=c1"}
+
 SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -163,7 +167,7 @@ def to_48k(project: Project, channel: str | None = None,
     if not force and _stage_matches(project.work48k, "to_48k", params, srcs):
         return "skipped", {}
     _clear_dir(project.work48k)
-    pan = {"left": "pan=mono|c0=c0", "right": "pan=mono|c0=c1"}.get(channel or "")
+    pan = PAN.get(channel or "")
     names = assign_names(srcs)
     renamed = {}
     for src in srcs:

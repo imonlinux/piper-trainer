@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import doctor, prepare
+from .. import doctor, peaks, prepare
 from ..config import Project, TIERS
 from . import catalog, settings
 from .jobs import JobError, JobManager
@@ -261,6 +261,22 @@ def create_app(workspace: Path | None = None,
     def project_sources(project_id: str):
         proj = project_or_404(project_id)
         return prepare.sources(proj)
+
+    @app.get("/api/projects/{project_id}/sources/{filename}/peaks")
+    def source_peaks(project_id: str, filename: str,
+                     channel: str = "downmix", buckets: int = 2000):
+        """Waveform envelope for the tuner canvas (§8 decision 1). Basename
+        only: peaks are for raw/ sources, never a path traversal target."""
+        proj = project_or_404(project_id)
+        if channel not in peaks.CHANNELS:
+            raise HTTPException(400, f"channel must be one of {peaks.CHANNELS}")
+        src = proj.raw / Path(filename).name
+        if not peaks.is_audio(src) or not src.is_file():
+            raise HTTPException(404, "not a source audio file")
+        try:
+            return peaks.compute_peaks(src, channel=channel, buckets=buckets)
+        except subprocess.CalledProcessError as exc:
+            raise HTTPException(422, "ffmpeg could not decode this file") from exc
 
     # -------------------------------------------------------------- ingest
 

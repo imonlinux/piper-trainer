@@ -151,6 +151,32 @@ def test_sources_endpoint(client, monkeypatch):
     assert rows[0]["codec"] == "pcm_s16le"
 
 
+def test_peaks_endpoint(client, monkeypatch):
+    from piper_trainer import peaks
+    client.post("/api/projects", json={"name": "p1"})
+    raw = client.app.state.workspace / "p1" / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "take01.wav").write_bytes(b"fake")
+    seen = {}
+
+    def fake_peaks(src, channel="downmix", buckets=2000):
+        seen.update(src=src.name, channel=channel, buckets=buckets)
+        return {"name": src.name, "channel": channel, "buckets": 3,
+                "rate": 8000, "duration": 12.5, "peaks": [0.1, 0.5, 0.9]}
+
+    monkeypatch.setattr(peaks, "compute_peaks", fake_peaks)
+    out = client.get("/api/projects/p1/sources/take01.wav/peaks",
+                     params={"channel": "left", "buckets": 100}).json()
+    assert seen == {"src": "take01.wav", "channel": "left", "buckets": 100}
+    assert out["peaks"] == [0.1, 0.5, 0.9]
+    # traversal-safe: only a basename reaches raw/
+    r = client.get("/api/projects/p1/sources/%2e%2e%2fproject.json/peaks")
+    assert r.status_code == 404
+    r = client.get("/api/projects/p1/sources/take01.wav/peaks",
+                   params={"channel": "sideways"})
+    assert r.status_code == 400
+
+
 # ------------------------------------------------------------------ ingest
 
 def test_upload_ingest_creates_job_and_stages(client, tmp_path):
