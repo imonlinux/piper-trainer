@@ -256,10 +256,13 @@ async function projectPage(name) {
   const epochs = el("input", { type: "number", min: "1",
                                value: trained ? "1000" : "4000",
                                style: "width:6em" });
+  const skipVal = el("input", { type: "checkbox" });
   async function doTrain() {
     const n = parseInt(epochs.value, 10);
     if (!n || n < 1) { uploadErr.textContent = "epochs must be a number >= 1"; return; }
-    await runJob("train", trained ? { add_epochs: n } : { max_epochs: n });
+    const params = trained ? { add_epochs: n } : { max_epochs: n };
+    if (skipVal.checked) params.skip_validate = true;
+    await runJob("train", params);
   }
 
   main().replaceChildren(
@@ -283,6 +286,10 @@ async function projectPage(name) {
       el("button", { onclick: () => runJob("transcribe") }, "run transcribe"),
       el("label", { class: "inline" }, trained ? "epochs (more)" : "epochs",
         epochs),
+      el("label", { class: "inline",
+                    title: "train even when validation reports errors "
+                         + "(same as the CLI's --skip-validate)" },
+        skipVal, "skip validation"),
       el("button", { onclick: doTrain }, trained ? "train N more" : "run train"),
       el("button", { onclick: () => runJob("export") }, "run export")),
     jobsWrap,
