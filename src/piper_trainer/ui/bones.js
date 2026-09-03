@@ -404,6 +404,7 @@ async function preparePage(name) {
 }
 
 async function projectPage(name) {
+  closeWatch(); // a re-render must not strand the previous page's socket
   const p = await api(`/projects/${name}`);
   const cells = Object.entries(p.directories).map(([k, v]) =>
     el("div", { class: "cell" }, k, el("b", {}, String(v))));
@@ -444,20 +445,23 @@ async function projectPage(name) {
 
   const cfg = p.config || {};
   const log = el("pre", { class: "log" }, "");
-  let ws = null;
-  let wsJob = null;
+  const logLink = el("a", { href: "#", hidden: true }, "full log");
+  logLink.addEventListener("click", (e) => e.stopPropagation());
 
   function watch(jobId) {
-    if (ws) { ws.close(); ws = null; }
-    wsJob = jobId;
+    closeWatch();
+    watchJobId = jobId;
+    logLink.href = `/api/jobs/${jobId}/log`;
+    logLink.hidden = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${proto}://${location.host}/api/jobs/${jobId}/stream`);
-    ws.onmessage = (ev) => {
+    watchSocket = new WebSocket(`${proto}://${location.host}/api/jobs/${jobId}/stream`);
+    watchSocket.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
-      if (msg.type === "log_reset") log.textContent = msg.text;
-      else if (msg.type === "log") {
-        log.textContent += msg.line + "\n";
-        log.scrollTop = log.scrollHeight;
+      if (msg.type === "log_reset") {
+        log.textContent = msg.text;
+        log._lines = msg.text ? msg.text.split("\n").length : 0;
+      } else if (msg.type === "log") {
+        appendLog(log, msg.line);
       } else if (msg.type === "state") {
         // Update the watched job in place; the table keeps every other row.
         const i = jobsCache.findIndex(j => j.id === msg.job.id);
@@ -466,10 +470,10 @@ async function projectPage(name) {
         renderJobs(jobsCache.slice(0, 10), false);
         const prog = msg.job.progress;
         progSpan.textContent = prog && prog.total
-          ? `epoch ${prog.current}/${prog.total}` : "";
+          ? `${prog.unit || ""} ${prog.current ?? "-"}/${prog.total}` : "";
       }
     };
-    ws.onclose = () => { if (wsJob === jobId) ws = null; };
+    watchSocket.onclose = () => { if (watchJobId === jobId) watchSocket = null; };
   }
 
   const jobsWrap = el("div", {});
@@ -568,6 +572,7 @@ async function projectPage(name) {
       el("button", { onclick: doTrain }, trained ? "train N more" : "run train"),
       el("button", { onclick: () => runJob("export") }, "run export")),
     jobsWrap,
+    logLink,
     log,
     el("h2", {}, "Danger"),
     el("form", { onsubmit: doDelete, class: "row" },
@@ -580,7 +585,7 @@ async function projectPage(name) {
 
   clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
-    if (ws) return; // the websocket already carries live state
+    if (watchSocket) return; // the websocket already carries live state
     try {
       const jobs = await api(`/projects/${name}/jobs`);
       jobsCache = jobs;
@@ -591,10 +596,41 @@ async function projectPage(name) {
 
 let pollTimer = null;
 
+// Watched-job socket + log tail, at module scope: a page re-render is a
+// fresh invocation whose locals cannot close the previous page's socket
+// (review finding 7 — every render() used to leak one socket that kept
+// receiving log lines into a detached <pre>).
+let watchSocket = null;
+let watchJobId = null;
+const LOG_MAX_LINES = 5000;
+
+function closeWatch() {
+  if (watchSocket) {
+    watchSocket.onclose = null; // the old page must not touch module state
+    watchSocket.close();
+    watchSocket = null;
+  }
+  watchJobId = null;
+}
+
+function appendLog(pre, line) {
+  pre.textContent += line + "\n";
+  pre._lines = (pre._lines || 0) + 1;
+  // A chatty training run must not grow the <pre> forever and hang the
+  // tab; keep a tail, the full log stays at GET /api/jobs/{id}/log.
+  if (pre._lines > LOG_MAX_LINES) {
+    const lines = pre.textContent.split("\n");
+    pre._lines = 4000;
+    pre.textContent = lines.slice(lines.length - 4001).join("\n");
+  }
+  pre.scrollTop = pre.scrollHeight;
+}
+
 // ------------------------------------------------------------------ router
 
 async function route() {
   clearInterval(pollTimer);
+  closeWatch();
   const h = location.hash || "#/projects";
   try {
     if (h === "#/projects") await projectsPage();

@@ -338,9 +338,9 @@ def create_app(workspace: Path | None = None,
         return job_or_404(job_id)
 
     @app.get("/api/jobs/{job_id}/log")
-    def job_log(job_id: str):
+    def job_log(job_id: str, tail: int | None = None):
         job_or_404(job_id)
-        return PlainTextResponse(manager().log(job_id))
+        return PlainTextResponse(manager().log(job_id, tail_bytes=tail))
 
     @app.post("/api/jobs/{job_id}/cancel")
     async def cancel_job(job_id: str):
@@ -369,8 +369,10 @@ def create_app(workspace: Path | None = None,
         q = manager().subscribe(job_id)
         try:
             await ws.send_json({"type": "state", "job": manager().get(job_id)})
+            # bounded: a refresh on a multi-hour training run must not
+            # re-read the whole log into one frame (review finding 6)
             await ws.send_json({"type": "log_reset",
-                                "text": manager().log(job_id)})
+                                "text": manager().log(job_id, tail_bytes=262144)})
             while True:
                 event = await q.get()
                 await ws.send_json(event)

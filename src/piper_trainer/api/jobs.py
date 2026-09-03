@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import secrets
 import signal
@@ -105,6 +106,7 @@ class JobManager:
         self._progress: dict[str, dict] = {}       # last known progress merge
         self._cancel_requested: set[str] = set()
         self._busy: set[str] = set()               # project names with a run
+        self._busy_orphans: set[str] = set()       # subset reserved by rescan
         self._subs: dict[str, set[asyncio.Queue]] = {}
         self._tasks: set[asyncio.Task] = set()     # strong refs, never GC'd
 
@@ -145,18 +147,34 @@ class JobManager:
 
         Queued jobs from a previous lifetime are surfaced but never adopted
         automatically (design doc resolved decision #2).
+
+        Also reconciles the busy set: a runner that outlived its manager
+        still holds its project's flock, so the project must stay reserved
+        until the recorded pid is gone — otherwise the next submit passes
+        the slot check, collides on the lock, and fails with a confusing
+        "project is locked" error. When the orphan's pid is gone, the
+        reservation is released again (nothing in this process owns a task
+        for it, so nothing else would release it).
         """
         interrupted = []
+        orphaned: set[str] = set()
         for jd in self.iter_job_dirs():
             self._index[jd.name] = jd
             job = _read_job(jd)
             if job.get("state") != "running":
                 continue
             if self._pid_alive(job.get("pid")):
+                orphaned.add(jd.parent.parent.name)
                 continue
             _write_job(jd, state="failed", error="interrupted",
                        finished_at=_now(), pid=None)
             interrupted.append(jd.name)
+        released = self._busy_orphans - orphaned
+        self._busy_orphans = set(orphaned)
+        self._busy |= orphaned
+        if released:
+            self._busy -= released
+            self._pump()
         return interrupted
 
     @staticmethod
@@ -187,9 +205,27 @@ class JobManager:
                if d.is_dir() and (d / "job.json").exists()]
         return sorted(out, key=lambda j: j["id"], reverse=True)
 
-    def log(self, job_id: str) -> str:
+    def log(self, job_id: str, tail_bytes: int | None = None) -> str:
+        """The job log, optionally bounded to the last `tail_bytes`.
+
+        A multi-hour training log grows to megabytes; shipping the whole
+        file in one websocket frame on every browser refresh has no upper
+        bound (review finding 6). The bounded read seeks to the end like
+        `_log_tail` and drops a partial first line.
+        """
         p = self.job_dir(job_id) / "log.txt"
-        return p.read_text(errors="replace") if p.exists() else ""
+        if not p.exists():
+            return ""
+        if tail_bytes is None:
+            return p.read_text(errors="replace")
+        with p.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - tail_bytes))
+            chunk = fh.read().decode("utf-8", "replace")
+        if size > tail_bytes and "\n" in chunk:
+            chunk = chunk.split("\n", 1)[1]
+        return chunk
 
     # ------------------------------------------------------------- subscribe
 
@@ -468,17 +504,46 @@ class JobManager:
                            f"cancel")
         self._cancel_requested.add(job_id)
         proc = self._procs.get(job_id)
-        if proc is not None and proc.returncode is None:
-            self._signal_group(proc, signal.SIGTERM)
-            loop = asyncio.get_running_loop()
-            loop.call_later(self.cancel_grace, self._ensure_dead, proc)
+        if proc is None or proc.returncode is not None:
+            # No supervised handle: a runner orphaned by an earlier API
+            # lifetime (review finding 5). It was started with
+            # start_new_session, so the recorded pid is still its process
+            # group leader — signal the group directly instead of
+            # returning 200 while nothing dies.
+            pid = job.get("pid")
+            if not isinstance(pid, int) or not self._pid_alive(pid):
+                raise JobError(
+                    f"job {job_id} has no running process to cancel")
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError) as exc:
+                raise JobError(
+                    f"could not signal job {job_id}: {exc}") from None
+            asyncio.get_running_loop().call_later(
+                self.cancel_grace, self._ensure_dead_pid, pid)
+            # No supervisor lives on this job, so nothing will observe the
+            # exit; the record stays "running" with a note until the next
+            # rescan reconciles it.
+            _write_job(jd, error="cancel requested (orphaned runner)")
+            self._broadcast(job_id, {"type": "state", "job": _read_job(jd)})
+            return _read_job(jd)
+        self._signal_group(proc, signal.SIGTERM)
+        loop = asyncio.get_running_loop()
+        loop.call_later(self.cancel_grace, self._ensure_dead, proc)
         return _read_job(jd)
 
     @staticmethod
     def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
-        import os
         try:
             os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    @staticmethod
+    def _ensure_dead_pid(pid: int) -> None:
+        """SIGKILL fallback for an orphaned runner's process group."""
+        try:
+            os.killpg(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
 

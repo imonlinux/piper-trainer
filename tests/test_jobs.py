@@ -326,6 +326,107 @@ async def test_start_rejects_terminal_job(mgr, tmp_path):
         await mgr.start(job["id"])
 
 
+async def test_rescan_reserves_slot_for_live_orphan_then_releases(tmp_path):
+    """Review finding 5: a runner that outlived its manager still holds its
+    project's flock, so the project must stay reserved while its pid lives —
+    otherwise the next submit passes the slot check, collides on the lock,
+    and fails with a confusing "project is locked" error. When the pid dies,
+    the reservation lifts and the queue is pumped."""
+    mgr = JobManager(tmp_path, cancel_grace=1.0, runner_cmd=slow_runner)
+    root = make_project(tmp_path)
+    orphan = subprocess.Popen(["sleep", "30"])
+    jd = root / "jobs" / "20260901T000000Z-train-orphan"
+    jd.mkdir(parents=True)
+    (jd / "job.json").write_text(json.dumps({
+        "id": jd.name, "kind": "train", "project": "proj",
+        "params": {}, "state": "running", "pid": orphan.pid}))
+    (jd / "log.txt").touch()
+
+    mgr.rescan()
+    assert mgr._busy == {"proj"}        # reserved while the pid lives
+    assert mgr.get(jd.name)["state"] == "running"
+
+    # a new submit for the same project must wait behind the orphan
+    queued = await mgr.submit(root, "prepare")
+    await asyncio.sleep(0.1)
+    assert mgr.get(queued["id"])["state"] == "queued"
+
+    # the orphan dies; the next rescan releases the slot and pumps
+    orphan.terminate()
+    orphan.wait()
+    mgr.rescan()
+    assert mgr.get(jd.name)["state"] == "failed"
+    assert mgr.get(jd.name)["error"] == "interrupted"
+
+    started = await wait_state(mgr, queued["id"], "running")
+    assert started["state"] == "running"
+    await mgr.cancel(queued["id"])
+    await wait_state(mgr, queued["id"], "cancelled")
+
+
+async def test_cancel_orphaned_runner_signals_process_group(tmp_path):
+    """Review finding 5: with no supervised handle, cancel must signal the
+    recorded pid's process group (the runner was started with
+    start_new_session, so the pid is its group leader) instead of returning
+    200 while nothing dies."""
+    mgr = JobManager(tmp_path, cancel_grace=1.0, runner_cmd=ok_runner)
+    root = make_project(tmp_path)
+    orphan = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    jd = root / "jobs" / "20260901T000000Z-train-orphan2"
+    jd.mkdir(parents=True)
+    (jd / "job.json").write_text(json.dumps({
+        "id": jd.name, "kind": "train", "project": "proj",
+        "params": {}, "state": "running", "pid": orphan.pid}))
+    (jd / "log.txt").touch()
+    mgr.rescan()   # index the job while the pid is alive
+
+    out = await mgr.cancel(jd.name)
+    assert out["state"] == "running"    # terminal state lands on rescan
+    assert "cancel requested" in out["error"]
+    assert orphan.wait(timeout=5) < 0   # SIGTERM took the group down
+    assert mgr._busy == {"proj"}        # reserved until rescan reconciles
+
+    mgr.rescan()
+    assert mgr.get(jd.name)["state"] == "failed"
+    assert mgr.get(jd.name)["error"] == "interrupted"
+
+
+async def test_cancel_orphaned_runner_with_dead_pid_raises(tmp_path):
+    """A record that still says running with no live pid behind it has
+    nothing to cancel — say so instead of returning 200."""
+    mgr = JobManager(tmp_path, cancel_grace=1.0, runner_cmd=ok_runner)
+    root = make_project(tmp_path)
+    orphan = subprocess.Popen(["sleep", "30"])
+    jd = root / "jobs" / "20260901T000000Z-train-orphan3"
+    jd.mkdir(parents=True)
+    (jd / "job.json").write_text(json.dumps({
+        "id": jd.name, "kind": "train", "project": "proj",
+        "params": {}, "state": "running", "pid": orphan.pid}))
+    (jd / "log.txt").touch()
+    mgr.rescan()       # indexed while alive; record still says running
+    orphan.terminate()
+    orphan.wait()
+
+    with pytest.raises(JobError):
+        await mgr.cancel(jd.name)
+
+
+async def test_log_tail_bounds_read(mgr, tmp_path):
+    """Review finding 6: a multi-hour training log grows to megabytes and
+    log() must be able to bound its read. tail_bytes seeks to the end and
+    drops the partial first line; a tail larger than the file is the whole
+    file."""
+    root = make_project(tmp_path)
+    job = await mgr.submit(root, "prepare")
+    await wait_state(mgr, job["id"], "succeeded")
+    log = root / "jobs" / job["id"] / "log.txt"
+    log.write_text("x" * 5000 + "\n" + "tail line\n")
+
+    assert mgr.log(job["id"]).startswith("xxxxx")   # unbounded read intact
+    assert mgr.log(job["id"], tail_bytes=100) == "tail line\n"
+    assert mgr.log(job["id"], tail_bytes=10 ** 9) == log.read_text()
+
+
 async def test_list_newest_first(tmp_path):
     root = make_project(tmp_path)
     # two finished jobs, timestamps a second apart (real submits can tie
