@@ -1,0 +1,7 @@
+# The ui-build stage runs `npm ci` itself; the host's node_modules must
+# never reach the context (it would be COPYed over the clean install).
+# Same for the built bundle: the image builds it from ui-src/ (design §8.4).
+.git
+ui-src/node_modules
+ui-src/dist
+src/piper_trainer/ui/app

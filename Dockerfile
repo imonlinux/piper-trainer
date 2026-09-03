@@ -16,6 +16,23 @@
 # (nvidia-* packages / _rocm_sdk_libraries_gfx1151), so a plain Python base
 # works for both. Only device passthrough differs at run time.
 
+# --------------------------------------------------------- React UI build
+# Decision §8.4: React, with the build step in the image — annoying but
+# bounded. ui-src/ builds to a static bundle that lands in
+# src/piper_trainer/ui/app/ and rides the existing /ui StaticFiles mount;
+# Bones stays alongside until the React app reaches parity (§6/§9).
+# This stage sits FIRST on purpose: the python stage below must stay
+# contiguous — anything after a second FROM would execute in whatever
+# stage that FROM declared.
+FROM node:22-bookworm-slim AS ui-build
+WORKDIR /ui
+COPY ui-src/package.json ui-src/package-lock.json ./
+RUN npm ci
+COPY ui-src/ ./
+# --outDir overrides vite.config.ts's repo-relative path (that one is for
+# local `npm run build` writing straight into src/piper_trainer/ui/app).
+RUN npm run build -- --outDir /out/app --emptyOutDir
+
 FROM python:3.12-slim-bookworm
 
 # ---------------------------------------------------------------- build args
@@ -154,9 +171,10 @@ RUN python3 -m pip install \
 # install below uses --no-deps by design. websockets is not optional here:
 # bare uvicorn refuses the WS upgrade ("Unsupported upgrade request") and
 # /api/jobs/{id}/stream 404s, leaving the UI on its polling fallback.
-# The UI itself (src/piper_trainer/ui/) needs no build step and ships with
-# the COPY src above; serve it with ./run.sh serve (see run.sh for why not
-# compose run under rootless podman).
+# Bones (src/piper_trainer/ui/) needs no build step and ships with the
+# COPY src above; the React bundle (built in ui-build, copied in below)
+# lands in the same tree. Serve with ./run.sh serve (see run.sh for
+# why not compose run under rootless podman).
 RUN python3 -m pip install \
         "fastapi>=0.110" \
         "uvicorn>=0.29" \
@@ -168,6 +186,7 @@ EXPOSE 8000
 # --------------------------------------------------------- piper-trainer CLI
 COPY pyproject.toml /opt/piper-trainer/pyproject.toml
 COPY src /opt/piper-trainer/src
+COPY --from=ui-build /out/app /opt/piper-trainer/src/piper_trainer/ui/app
 RUN python3 -m pip install -e /opt/piper-trainer --no-deps
 
 # ------------------------------------------------------------- versions stamp
@@ -216,7 +235,8 @@ RUN python3 -c "from piper import espeakbridge" \
     && python3 -c "import torch, auditok, faster_whisper, lightning, onnxscript" \
     && python3 -c "import piper.train.__main__" \
     && python3 -c "import piper_trainer.api.app" \
-    && test -f /opt/piper-trainer/src/piper_trainer/ui/index.html
+    && test -f /opt/piper-trainer/src/piper_trainer/ui/index.html \
+    && test -f /opt/piper-trainer/src/piper_trainer/ui/app/index.html
 
 ENTRYPOINT ["piper-trainer"]
 CMD ["doctor"]
