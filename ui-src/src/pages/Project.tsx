@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   del,
@@ -8,6 +8,13 @@ import {
   upload,
 } from "../api";
 import { progressText, useJobStream, usePoll } from "../hooks";
+import {
+  percentDone,
+  resultText,
+  summaryText,
+  summarize,
+} from "../joblog";
+import type { LogSummary } from "../joblog";
 import type { Job, ProjectDetail, SourceInfo } from "../types";
 
 // Project detail: directory counts, sources, upload ingest, the job
@@ -32,6 +39,9 @@ export function ProjectPage({ name }: { name: string }) {
   const autoWatched = useRef(false);
   const { lines, job: watched, logHref } = useJobStream(watchId);
   const logPre = useRef<HTMLPreElement>(null);
+  // The clean layer over the raw tail: progress + RESULT folded from the
+  // runner's ##directives (and Lightning's Epoch lines for train jobs).
+  const watchSum = useMemo(() => summarize(lines, watched), [lines, watched]);
 
   function load(): void {
     get<ProjectDetail>(`/projects/${name}`)
@@ -234,7 +244,7 @@ export function ProjectPage({ name }: { name: string }) {
       <h1>{p.name}</h1>
       <p className="muted">
         {p.clips} clips, {p.minutes ?? "?"} min, tiers trained:{" "}
-        {p.tiers_trained.join(", ") || "none"} {watched ? progressText(watched.progress) : ""}
+        {p.tiers_trained.join(", ") || "none"} {watched ? summaryText(watchSum) : ""}
       </p>
 
       <h2>Directories</h2>
@@ -319,6 +329,7 @@ export function ProjectPage({ name }: { name: string }) {
           <a href={logHref}>full log</a>
         </p>
       )}
+      <LogStrip sum={watchSum} job={watched} />
       <pre className="log" ref={logPre}>
         {lines.join("\n")}
       </pre>
@@ -366,6 +377,39 @@ function TrainControls(props: {
         {props.trained ? "train N more" : "run train"}
       </button>
     </>
+  );
+}
+
+// Progress strip above the raw log: the runner's TARGET/PROGRESS
+// directives (plus Lightning's Epoch lines) drive the bar; the RESULT
+// directive becomes a one-line summary or error. Nothing here blocks
+// the raw tail below — that stays the source of truth.
+function LogStrip(props: { sum: LogSummary; job: Job | null }) {
+  const { sum, job } = props;
+  if (job === null) return null;
+  // On success the last "Epoch N:" line under-reports by one (N runs,
+  // N+1 are done); show the run's own total instead.
+  const text =
+    job.state === "succeeded" && sum.total !== null
+      ? `${sum.unit ?? ""} ${sum.total}/${sum.total}`.trim()
+      : summaryText(sum);
+  const pct = percentDone(sum, job.state);
+  return (
+    <div className="logstrip">
+      {text && (
+        <span className={job.state === "failed" ? "error" : "muted"}>{text}</span>
+      )}
+      {pct !== null && (
+        <span className="bar" aria-hidden="true">
+          <span className="bar-fill" style={{ width: `${pct}%` }} />
+        </span>
+      )}
+      {sum.error !== null ? (
+        <span className="error">{sum.error}</span>
+      ) : sum.result !== null ? (
+        <span className="ok">{resultText(sum.result)}</span>
+      ) : null}
+    </div>
   );
 }
 
