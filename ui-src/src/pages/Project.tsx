@@ -63,19 +63,25 @@ export function ProjectPage({ name }: { name: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
 
-  // Auto-watch the first running job once per page, like Bones did on
-  // load; the user can switch the watch from the table afterwards.
+  // Auto-watch a running job; with none running, watch the newest job
+  // anyway — the server replays state + the log tail on connect for
+  // finished jobs too, so the pane shows the last run instead of an
+  // empty box. Once per page; the table can switch the watch after.
   useEffect(() => {
     if (p !== null && !autoWatched.current) {
       autoWatched.current = true;
       const running = p.jobs.find((j) => j.state === "running");
-      if (running) setWatchId(running.id);
+      setWatchId(running ? running.id : (p.jobs[0]?.id ?? null));
     }
   }, [p]);
 
-  // List refresh while nothing streams: the websocket already carries
-  // live state for the watched job, so pause then (same shape as Bones).
-  const paused = watchId !== null || loadError !== null;
+  // List refresh pauses only while the watched job is actually live
+  // (the websocket carries its state); watching a finished job must NOT
+  // pause the poll, or the job table would go stale forever.
+  const watchActive =
+    watchId !== null &&
+    (watched === null || watched.state === "running" || watched.state === "queued");
+  const paused = watchActive || loadError !== null;
   usePoll(async () => {
     try {
       const jobs = await get<Job[]>(`/projects/${name}/jobs`);
@@ -399,11 +405,11 @@ function JobsTable(props: {
                 {active && (
                   <button onClick={() => props.onCancel(j.id)}>cancel</button>
                 )}{" "}
-                {j.state === "running" && (
-                  <button onClick={() => props.onWatch(j.id)}>
-                    {props.watchId === j.id ? "watching" : "log"}
-                  </button>
-                )}{" "}
+                {/* every job has a log once it has run; the server
+                    replays the tail for terminal jobs on connect */}
+                <button onClick={() => props.onWatch(j.id)}>
+                  {props.watchId === j.id ? "watching" : "log"}
+                </button>{" "}
                 {j.state === "queued" && (
                   <button onClick={() => props.onStart(j.id)}>start</button>
                 )}
