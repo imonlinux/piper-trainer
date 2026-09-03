@@ -223,7 +223,7 @@ def _train(project: Project, params: dict, emit) -> dict:
         resume=resume,
         accelerator=params.get("accelerator", "gpu"),
         precision=params.get("precision", "32-true"))
-    print(" \\\n  ".join(cmd), flush=True)
+    # run() prints the command itself; printing here too doubled it in the log
     code = train_mod.run(cmd)
     if code != 0:
         raise RuntimeError(f"training exited with code {code}")
