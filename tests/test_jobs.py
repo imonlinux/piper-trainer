@@ -196,6 +196,58 @@ async def test_cancel_while_queued(mgr, tmp_path):
     await wait_state(mgr, first["id"], "cancelled")
 
 
+async def test_cancel_between_submit_and_supervise_prevents_start(mgr):
+    """Review finding 3: _pump pops the id before the supervisor task's
+    first step, so a cancel in that window used to write "cancelled" and
+    return 200 while the supervisor overwrote it with "running" and
+    spawned the process anyway."""
+    mgr._runner_cmd = slow_runner
+    root = make_project(mgr.workspace, "raceproj")
+    # submit schedules the supervisor task but contains no awaits, so the
+    # task has not run when cancel() executes in the same tick
+    job = await mgr.submit(root, "prepare")
+    out = await mgr.cancel(job["id"])
+    assert out["state"] == "cancelled"
+    await asyncio.sleep(0.1)  # let the scheduled supervisor take its step
+    final = mgr.get(job["id"])
+    assert final["state"] == "cancelled"
+    assert final["pid"] is None
+    assert not mgr._procs
+    assert mgr._busy == set()
+
+
+async def test_midrun_write_failure_releases_slot(mgr, monkeypatch):
+    """Review finding 2: an exception after the spawn (ENOSPC on a
+    job.json write, say) used to leak the project slot and wedge every
+    future job behind `self._busy`. The supervisor must mark the job
+    failed and release the slot on every path."""
+    from piper_trainer.api import jobs as jobs_mod
+
+    root = make_project(mgr.workspace, "enoscproj")
+    real = jobs_mod._write_job
+    calls = {"n": 0}
+
+    def flaky_write_job(jd, **fields):
+        calls["n"] += 1
+        if calls["n"] == 3:  # running + pid succeeded; this one is mid-run
+            raise OSError(28, "No space left on device")
+        return real(jd, **fields)
+
+    monkeypatch.setattr(jobs_mod, "_write_job", flaky_write_job)
+    job = await mgr.submit(root, "prepare")
+    failed = await wait_state(mgr, job["id"], "failed")
+    assert failed["error"].startswith("supervisor error")
+    assert "No space left" in failed["error"]
+    assert mgr._busy == set()
+    assert not mgr._procs
+
+    # the workspace must accept new work afterwards
+    monkeypatch.undo()
+    followup = await mgr.submit(root, "prepare")
+    done = await wait_state(mgr, followup["id"], "succeeded")
+    assert done["state"] == "succeeded"
+
+
 async def test_cancel_terminal_job_raises(mgr, tmp_path):
     root = make_project(tmp_path)
     job = await mgr.submit(root, "prepare")

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import secrets
 import signal
@@ -215,7 +216,15 @@ class JobManager:
 
     async def submit(self, project_root: Path, kind: str,
                      stage: str | None = None,
-                     params: dict | None = None) -> dict:
+                     params: dict | None = None,
+                     run: bool = True) -> dict:
+        """Create a job record; enqueue it unless `run=False`.
+
+        `run=False` exists for callers that must stage inputs before a
+        runner can exist (upload ingest): the job stays queued but never
+        enters `_pending`, so `_pump` will not pick it up until an explicit
+        `start()` after the last byte lands.
+        """
         if kind not in KINDS:
             raise ValueError(f"unknown job kind {kind!r}; expected one of "
                              f"{', '.join(KINDS)}")
@@ -244,7 +253,8 @@ class JobManager:
         (job_dir / "job.json").write_text(json.dumps(job, indent=2) + "\n")
         self._index[job_id] = job_dir
         self._progress[job_id] = {}
-        self._pending.append(job_id)
+        if run:
+            self._pending.append(job_id)
         self._broadcast(job_id, {"type": "state", "job": job})
         self._pump()
         return job
@@ -285,7 +295,7 @@ class JobManager:
             self._busy.add(project_name)
             task = asyncio.get_running_loop().create_task(self._supervise(job_id))
             self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            task.add_done_callback(self._on_task_done)
 
     @staticmethod
     def _default_runner_cmd(job_dir: Path) -> list[str]:
@@ -299,6 +309,17 @@ class JobManager:
         jd = self.job_dir(job_id)
         project_name = jd.parent.parent.name
         try:
+            # A cancel that arrived after _pump popped the id but before
+            # this task's first step still sees job.json == "queued" here.
+            # Honour it instead of overwriting with "running" and spawning
+            # a process the UI already shows as cancelled.
+            job = _read_job(jd)
+            if job_id in self._cancel_requested or job["state"] == "cancelled":
+                _write_job(jd, state="cancelled", finished_at=_now(),
+                           error="cancelled while queued")
+                self._broadcast(job_id, {
+                    "type": "state", "job": _read_job(jd)})
+                return
             job = _write_job(jd, state="running", started_at=_now())
             self._broadcast(job_id, {"type": "state", "job": job})
             proc = await asyncio.create_subprocess_exec(
@@ -307,71 +328,87 @@ class JobManager:
                 stderr=asyncio.subprocess.STDOUT,
                 start_new_session=True,
             )
-        except Exception as exc:
-            _write_job(jd, state="failed", error=f"could not start: {exc}",
-                       finished_at=_now())
-            self._busy.discard(project_name)
-            self._broadcast(job_id, {
-                "type": "state", "job": _read_job(jd)})
-            self._pump()
-            return
 
-        self._procs[job_id] = proc
-        _write_job(jd, pid=proc.pid)
-        result = None
-        buf = b""
-        with (jd / "log.txt").open("ab") as log_fh:
-            while True:
-                chunk = await proc.stdout.read(4096)
-                if not chunk:
-                    break
-                buf += chunk
+            self._procs[job_id] = proc
+            _write_job(jd, pid=proc.pid)
+            result = None
+            buf = b""
+            with (jd / "log.txt").open("ab") as log_fh:
                 while True:
-                    m = re.search(rb"\r\n|\r|\n", buf)
-                    if m is None:
+                    chunk = await proc.stdout.read(4096)
+                    if not chunk:
                         break
-                    raw, buf = buf[:m.start()], buf[m.end():]
-                    text = raw.decode("utf-8", "replace")
-                    log_fh.write(text.encode() + b"\n")
-                    log_fh.flush()
-                    self._broadcast(job_id, {"type": "log", "line": text})
-                    result = self._on_line(job_id, text) or result
-                if len(buf) > 1 << 20:  # pathological unterminated line
-                    text = buf.decode("utf-8", "replace")
-                    buf = b""
-                    log_fh.write(text.encode() + b"\n")
-                    self._broadcast(job_id, {"type": "log", "line": text})
+                    buf += chunk
+                    while True:
+                        m = re.search(rb"\r\n|\r|\n", buf)
+                        if m is None:
+                            break
+                        raw, buf = buf[:m.start()], buf[m.end():]
+                        text = raw.decode("utf-8", "replace")
+                        log_fh.write(text.encode() + b"\n")
+                        log_fh.flush()
+                        self._broadcast(job_id, {"type": "log", "line": text})
+                        result = self._on_line(job_id, text) or result
+                    if len(buf) > 1 << 20:  # pathological unterminated line
+                        text = buf.decode("utf-8", "replace")
+                        buf = b""
+                        log_fh.write(text.encode() + b"\n")
+                        self._broadcast(job_id, {"type": "log", "line": text})
 
-        code = await proc.wait()
-        cancelled = job_id in self._cancel_requested
-        if code == 0:
-            state, error = "succeeded", None
-        elif cancelled:
-            state, error = "cancelled", "cancelled by user"
-        else:
-            state = "failed"
-            # Prefer a runner-reported reason, then the last log line (the
-            # tail of an unhandled traceback), then the bare exit code. The
-            # numeric code stays in exit_code either way.
-            error = None
-            if isinstance(result, dict) and result.get("error"):
-                error = str(result["error"])
+            code = await proc.wait()
+            cancelled = job_id in self._cancel_requested
+            if code == 0:
+                state, error = "succeeded", None
+            elif cancelled:
+                state, error = "cancelled", "cancelled by user"
             else:
-                error = _log_tail(jd) or f"exited with code {code}"
-        updates: dict = {"state": state, "exit_code": code,
-                         "finished_at": _now(), "pid": None, "error": error}
-        if result is not None:
-            updates["result"] = result
-            if isinstance(result, dict) and result.get("artifacts"):
-                updates["artifacts"] = result["artifacts"]
-        job = _write_job(jd, **updates)
-        self._broadcast(job_id, {"type": "state", "job": job})
+                state = "failed"
+                # Prefer a runner-reported reason, then the last log line (the
+                # tail of an unhandled traceback), then the bare exit code. The
+                # numeric code stays in exit_code either way.
+                error = None
+                if isinstance(result, dict) and result.get("error"):
+                    error = str(result["error"])
+                else:
+                    error = _log_tail(jd) or f"exited with code {code}"
+            updates: dict = {"state": state, "exit_code": code,
+                             "finished_at": _now(), "pid": None, "error": error}
+            if result is not None:
+                updates["result"] = result
+                if isinstance(result, dict) and result.get("artifacts"):
+                    updates["artifacts"] = result["artifacts"]
+            job = _write_job(jd, **updates)
+            self._broadcast(job_id, {"type": "state", "job": job})
+        except Exception as exc:
+            # Anything from here — a job.json write on a full disk, a decode
+            # error — used to leak the project slot and orphan the runner.
+            # Record it on the job; the record write itself may fail for the
+            # same reason, so it gets its own guard.
+            try:
+                _write_job(jd, state="failed",
+                           error=f"supervisor error: {exc}",
+                           finished_at=_now(), pid=None)
+                self._broadcast(job_id, {
+                    "type": "state", "job": _read_job(jd)})
+            except Exception:  # noqa: BLE001 — nothing left to do
+                pass
+        finally:
+            # The slot release must happen on every path; with the default
+            # single-slot rule a leaked name blocks every project forever.
+            self._procs.pop(job_id, None)
+            self._progress.pop(job_id, None)
+            self._cancel_requested.discard(job_id)
+            self._busy.discard(project_name)
+            self._pump()
 
-        self._procs.pop(job_id, None)
-        self._progress.pop(job_id, None)
-        self._cancel_requested.discard(job_id)
-        self._busy.discard(project_name)
-        self._pump()
+    def _on_task_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logging.getLogger(__name__).error(
+                "job supervisor task crashed: %r", exc)
 
     def _on_line(self, job_id: str, text: str) -> dict | None:
         """Interpret one output line; returns a captured RESULT payload."""
@@ -417,6 +454,11 @@ class JobManager:
         if job["state"] == "queued":
             if job_id in self._pending:
                 self._pending.remove(job_id)
+            # The supervisor task may already be scheduled but not yet run
+            # (it pops from _pending in _pump before its first step). Mark
+            # the intent so its first act is to honour the cancel instead
+            # of overwriting this state with "running".
+            self._cancel_requested.add(job_id)
             job = _write_job(jd, state="cancelled", finished_at=_now(),
                              error="cancelled while queued")
             self._broadcast(job_id, {"type": "state", "job": job})

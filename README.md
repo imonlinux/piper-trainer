@@ -299,6 +299,8 @@ The training images carry the api runtime too, so the same thing works from the 
 ./run.sh serve                           # http://localhost:8000/ (API_PORT to change)
 ```
 
+The API has no authentication, so `run.sh serve` publishes it to **127.0.0.1 on the host only**. To reach it from another machine (the LAN case), set `API_BIND=0.0.0.0` and put your own protection in front of it — the supported path is localhost or a VPN.
+
 run.sh is the supported launcher — it picks the right UID mapping, GPU groups, and SELinux labels for podman vs docker. Prefer it over `compose run`: under rootless podman, compose's fixed `user:` line makes `/workspace` unwritable, and its numeric render-GID default is Debian's, not your distro's — the two failures `doctor` reports as *not writable* and *GPU available (0 devices)*. On rootful docker the compose form also works:
 
 ```bash

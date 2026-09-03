@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import sys
 
@@ -200,6 +201,48 @@ def test_upload_ingest_creates_job_and_stages(client, tmp_path):
     incoming = (tmp_path / "p1" / "jobs" / job["id"] / "incoming")
     assert sorted(p.name for p in incoming.iterdir()) == \
         ["b.flac", "my take.wav"]
+
+
+PROBE_RUNNER = (
+    "import sys, json\n"
+    "from pathlib import Path\n"
+    "jd = Path(sys.argv[1])\n"
+    "inc = jd / 'incoming'\n"
+    "seen = ({p.name: p.stat().st_size for p in inc.iterdir()}\n"
+    "        if inc.exists() else None)\n"
+    "(jd / 'observed.json').write_text(json.dumps(seen))\n"
+    "print('##RESULT {\"probed\": true}')\n")
+
+
+def test_ingest_stages_every_byte_before_runner_starts(tmp_path):
+    """Review finding 1: the runner used to start while the upload loop
+    was still filling incoming/, so any file bigger than one 1 MiB read
+    chunk was moved into raw/ truncated. The runner must see every staged
+    byte on its first line of life."""
+    def probe_cmd(jd):
+        return [sys.executable, "-c", PROBE_RUNNER, str(jd)]
+
+    app = create_app(tmp_path, runner_cmd=probe_cmd)
+    big = b"\0" * (20 * 1024 * 1024)
+    with TestClient(app) as c:
+        c.post("/api/projects", json={"name": "p1"})
+        r = c.post("/api/projects/p1/ingest", files=[
+            ("files", ("a.wav", io.BytesIO(big), "audio/wav")),
+            ("files", ("b.wav", io.BytesIO(big), "audio/wav")),
+        ])
+        assert r.status_code == 202
+        job_id = r.json()["id"]
+        import time
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            state = c.get(f"/api/jobs/{job_id}").json()["state"]
+            if state in ("succeeded", "failed", "cancelled"):
+                break
+            time.sleep(0.05)
+        assert state == "succeeded"
+        jd = tmp_path / "p1" / "jobs" / job_id
+        seen = json.loads((jd / "observed.json").read_text())
+        assert seen == {"a.wav": len(big), "b.wav": len(big)}
 
 
 # -------------------------------------------------------------------- jobs

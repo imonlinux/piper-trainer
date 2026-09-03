@@ -122,8 +122,12 @@ args+=(--shm-size 8g)
 # `./run.sh serve` publishes API_PORT and defaults the container-internal
 # listener to 0.0.0.0 (127.0.0.1 inside a container is unreachable from the
 # host). An explicit --host on the command line always wins.
+# The publish target on the HOST side defaults to 127.0.0.1: the API has no
+# auth and can spawn jobs, so it is not offered to the LAN by default. Set
+# API_BIND=0.0.0.0 to expose it to your network deliberately (design §7:
+# the supported path is localhost / VPN).
 if [[ "${1:-}" == "serve" ]]; then
-    args+=(-p "${API_PORT:-8000}:8000")
+    args+=(-p "${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000")
     host_set=0
     for a in "$@"; do
         case "$a" in --host|--host=*) host_set=1 ;; esac

@@ -292,8 +292,15 @@ def create_app(workspace: Path | None = None,
         proj = project_or_404(project_id)
         if not files:
             raise HTTPException(400, "no files uploaded")
+        # Stage every byte before a runner can exist. submit(run=False)
+        # creates the job record without enqueueing it; the runner starts
+        # only after the last chunk lands. Submitting first used to let the
+        # supervisor's first await race the upload loop, and _ingest moved
+        # half-written files into raw/ (review finding 1 — silent data
+        # loss on any upload larger than one read chunk).
         job = await manager().submit(proj.root, "ingest",
-                                     params={"source_type": "upload"})
+                                     params={"source_type": "upload"},
+                                     run=False)
         job_dir = manager().job_dir(job["id"])
         incoming = job_dir / "incoming"
         incoming.mkdir()
@@ -302,7 +309,12 @@ def create_app(workspace: Path | None = None,
             with dest.open("wb") as out:
                 while chunk := await f.read(1 << 20):
                     out.write(chunk)
-        return job
+        try:
+            return await manager().start(job["id"])
+        except JobError:
+            # cancelled while the upload was still streaming — the record
+            # already says so; report that state instead of failing
+            return manager().get(job["id"])
 
     # ---------------------------------------------------------------- jobs
 
