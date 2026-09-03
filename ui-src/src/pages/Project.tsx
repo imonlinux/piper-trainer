@@ -24,6 +24,10 @@ export function ProjectPage({ name }: { name: string }) {
   const [sources, setSources] = useState<SourceInfo[]>([]);
   const [actionError, setActionError] = useState("");
   const [uploadError, setUploadError] = useState("");
+  // Set right after an upload POST: the ingest runs as a job, so the
+  // sources list can only be reloaded once that job settles (the poll
+  // feeds p.jobs; when we see the terminal state we reload once).
+  const [ingestId, setIngestId] = useState<string | null>(null);
   const [watchId, setWatchId] = useState<string | null>(null);
   const autoWatched = useRef(false);
   const { lines, job: watched, logHref } = useJobStream(watchId);
@@ -38,6 +42,12 @@ export function ProjectPage({ name }: { name: string }) {
       .catch((e: Error) => setLoadError(e));
   }
 
+  function loadSources(): void {
+    get<SourceInfo[]>(`/projects/${name}/sources`)
+      .then((s) => setSources(s))
+      .catch(() => setSources([]));
+  }
+
   useEffect(() => {
     setP(null);
     setLoadError(null);
@@ -49,9 +59,7 @@ export function ProjectPage({ name }: { name: string }) {
         setLoadError(null);
       })
       .catch((e: Error) => setLoadError(e));
-    get<SourceInfo[]>(`/projects/${name}/sources`)
-      .then((s) => setSources(s))
-      .catch(() => setSources([]));
+    loadSources();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
 
@@ -85,6 +93,22 @@ export function ProjectPage({ name }: { name: string }) {
     const pre = logPre.current;
     if (pre) pre.scrollTop = pre.scrollHeight;
   }, [lines]);
+
+  // The upload POST returns as soon as the ingest job is created, not
+  // when the file has landed in raw/ — so reload the sources list when
+  // the tracked ingest job reaches a terminal state. If that state is
+  // never observed (poll paused while another job is watched), the next
+  // live poll tick after un-watching heals it.
+  useEffect(() => {
+    if (ingestId === null || p === null) return;
+    const ing = p.jobs.find((j) => j.id === ingestId);
+    if (!ing) return;
+    if (["succeeded", "failed", "canceled", "interrupted"].includes(ing.state)) {
+      setIngestId(null);
+      loadSources();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ingestId, p]);
 
   // ------------------------------------------------------------- guards
   // A deleted project must say so, not spin: project_or_404 answers 404
@@ -152,9 +176,10 @@ export function ProjectPage({ name }: { name: string }) {
     for (const f of input?.files ?? []) fd.append("files", f);
     if (fd.getAll("files").length === 0) return;
     try {
-      await upload(`/projects/${name}/ingest`, fd);
+      const job = await upload<Job>(`/projects/${name}/ingest`, fd);
       formEl.reset();
       refreshSoon();
+      setIngestId(job.id);
     } catch (ex) {
       setUploadError(String(ex));
     }
