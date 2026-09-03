@@ -109,6 +109,31 @@ def test_unknown_kind_fails(tmp_path):
         runner.execute(jd)
 
 
+def test_train_add_epochs_implies_resume_auto(tmp_path, monkeypatch):
+    """A UI 'train N more' job (add_epochs, no resume) must resume from the
+    latest checkpoint: the ceiling arithmetic needs its epoch counter.
+    Regression: add_epochs alone hit '--add-epochs needs a checkpoint'."""
+    jd = make_job(tmp_path, "train",
+                  {"add_epochs": 10, "skip_validate": True})
+    ckpt = tmp_path / "proj" / "fake-last.ckpt"
+    ckpt.write_bytes(b"x")
+    seen = {}
+    monkeypatch.setattr(runner.train_mod, "latest_checkpoint",
+                        lambda project, tier: ckpt)
+    monkeypatch.setattr(runner.train_mod, "checkpoint_epoch",
+                        lambda c: 100)
+    monkeypatch.setattr(
+        runner.train_mod, "build_command",
+        lambda project, **kw: seen.update(kw) or ["echo", "train"])
+    monkeypatch.setattr(runner.train_mod, "run", lambda cmd: 0)
+
+    result = runner.execute(jd)
+
+    assert seen["resume"] == ckpt
+    assert seen["max_epochs"] == 110  # 100 in the checkpoint + 10 more
+    assert result["max_epochs"] == 110
+
+
 def test_process_entry_emits_result_and_exits_zero(tmp_path):
     """The real `python -m` entry, as the job manager spawns it."""
     jd = make_job(tmp_path, "validate", {})

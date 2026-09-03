@@ -179,6 +179,13 @@ def _train(project: Project, params: dict, emit) -> dict:
                 + "; ".join(f"[{f.code}] {f.message}" for f in errors))
 
     resume = params.get("resume")
+    # "N more" is a resume by definition: the epoch arithmetic needs the
+    # checkpoint's counter, so add_epochs with no explicit checkpoint
+    # resumes from the latest one. (The CLI asks for --resume auto
+    # explicitly; the API makes it implicit so a "train N more" button
+    # cannot produce "--add-epochs needs a checkpoint" by omission.)
+    if resume is None and params.get("add_epochs") is not None:
+        resume = "auto"
     ckpt_epoch = None
     if resume:
         if resume == "auto":
