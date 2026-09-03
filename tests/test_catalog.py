@@ -70,6 +70,47 @@ def test_catalog_is_cached():
     assert len(calls) == 2
 
 
+def test_snapshot_fallback_is_cached_only_briefly():
+    """Review finding 10: the UI's retry must be able to work — a fallback
+    cached for the full live TTL kept serving a stale snapshot for ten
+    minutes after HF came back."""
+    calls = []
+
+    def fake(url, timeout):
+        calls.append(url)
+        raise RuntimeError("offline")
+    clock = {"t": 100.0}
+    catalog.catalog(fetch=fake, clock=lambda: clock["t"])
+    assert len(calls) == 1
+    # past the snapshot TTL (but well short of the live TTL) it expires
+    clock["t"] = 100.0 + catalog._SNAPSHOT_TTL + 1
+    catalog.catalog(fetch=fake, clock=lambda: clock["t"])
+    assert len(calls) == 2
+
+
+def test_force_bypasses_the_cache():
+    state = {"fail": True}
+
+    def flaky(url, timeout):
+        if state["fail"]:
+            raise RuntimeError("offline")
+        return [{"type": "directory", "path": "en"},
+                {"type": "directory", "path": "en/en_US"},
+                {"type": "directory", "path": "en/en_US/alan"},
+                {"type": "directory", "path": "en/en_US/alan/medium"}]
+    clock = {"t": 100.0}
+    cat = catalog.catalog(fetch=flaky, clock=lambda: clock["t"])
+    assert cat["source"] == "snapshot"
+    # unforced and still inside the snapshot TTL: stale
+    cat = catalog.catalog(fetch=flaky, clock=lambda: clock["t"])
+    assert cat["source"] == "snapshot"
+    # forced: the retry goes to the wire and comes back live
+    state["fail"] = False
+    cat = catalog.catalog(fetch=flaky, clock=lambda: clock["t"], force=True)
+    assert cat["source"] == "live"
+    assert cat["languages"]["en"]["en_US"]["alan"] == ["medium"]
+
+
 def test_detail_from_snapshot():
     def boom(url, timeout):
         raise RuntimeError("offline")

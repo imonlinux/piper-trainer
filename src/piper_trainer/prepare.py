@@ -23,7 +23,15 @@ from pathlib import Path
 
 from .config import Project, TIERS
 
-AUDIO_EXT = {".wav", ".mp4", ".m4a", ".mp3", ".flac", ".ogg", ".aac", ".webm", ".mkv"}
+# The one list of processable audio containers: what the pipeline (and
+# sources()/peaks.is_audio) recognise. app.py serves playback from
+# PLAYABLE_EXT so /files/ stays a playback whitelist, not a second truth.
+AUDIO_EXT = {".wav", ".mp4", ".m4a", ".mp3", ".flac", ".ogg", ".aac",
+             ".webm", ".mkv", ".opus"}
+
+# Browsers have no <audio> support for Matroska; .mkv is still processed
+# end to end, it is just not served back through /files/.
+PLAYABLE_EXT = AUDIO_EXT - {".mkv"}
 
 # channel picker -> ffmpeg filter. Shared with peaks.py so the tuner's
 # waveform is decoded through the same channel choice the VAD will see.

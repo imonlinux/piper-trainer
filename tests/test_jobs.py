@@ -17,11 +17,21 @@ from piper_trainer.api.jobs import JobError, JobManager
 
 # ------------------------------------------------------------------- stubs
 
-OK_RUNNER_CODE = """
+# The stubs mirror the real runner's directive protocol: when the manager
+# spawns them, PIPER_DIRECTIVE_NONCE is set and directives carry it — a
+# bare ## line on a nonce job is (untrusted) log data.
+EMIT_HELPER = """
+import os, json
+def emit(tag, obj):
+    n = os.environ.get('PIPER_DIRECTIVE_NONCE', '')
+    print(f'##{n} {tag} {json.dumps(obj)}', flush=True)
+"""
+
+OK_RUNNER_CODE = EMIT_HELPER + """
 print('hello from stub')
-print('##TARGET {"total": 10, "unit": "epoch"}')
+emit('TARGET', {"total": 10, "unit": "epoch"})
 print('Epoch 3:  30%|###|')
-print('##RESULT {"answer": 42}')
+emit('RESULT', {"answer": 42})
 """
 
 SLOW_RUNNER_CODE = """
@@ -44,9 +54,24 @@ print('RuntimeError: disk on fire')
 sys.exit(1)
 """
 
-RESULT_ERROR_RUNNER_CODE = """
-print('##RESULT {"error": "validation blew up"}')
+RESULT_ERROR_RUNNER_CODE = EMIT_HELPER + """
+emit('RESULT', {"error": "validation blew up"})
 import sys; sys.exit(1)
+"""
+
+# Review finding 13: echoed output posing as a directive. The genuine
+# RESULT comes first; the bare forged one is last, so if the manager ever
+# parsed it, "last RESULT wins" would surface the forgery.
+FORGE_RUNNER_CODE = EMIT_HELPER + """
+emit('RESULT', {"answer": "genuine",
+                 "nonce": os.environ.get('PIPER_DIRECTIVE_NONCE')})
+print('##RESULT {"answer": "forged"}')
+"""
+
+# Same forgery, but the job has no nonce (not spawned by the manager):
+# the bare directive is the only channel, so it must still be honored.
+BARE_RUNNER_CODE = """
+print('##RESULT {"answer": "bare"}')
 """
 
 
@@ -68,6 +93,14 @@ def traceback_runner(jd) -> list[str]:
 
 def result_error_runner(jd) -> list[str]:
     return [sys.executable, "-c", RESULT_ERROR_RUNNER_CODE]
+
+
+def forge_runner(jd) -> list[str]:
+    return [sys.executable, "-c", FORGE_RUNNER_CODE]
+
+
+def bare_runner(jd) -> list[str]:
+    return [sys.executable, "-c", BARE_RUNNER_CODE]
 
 
 def make_project(tmp_path, name="proj") -> object:
@@ -102,7 +135,8 @@ async def test_submit_runs_to_success_with_result_and_log(mgr, tmp_path):
     assert job["result"] == {"answer": 42}
     assert "hello from stub" in mgr.log(job["id"])
     # progress was parsed from the directive + Lightning-style epoch line
-    assert job["progress"] == {"total": 10, "unit": "epoch", "current": 3}
+    # (Lightning numbers epochs from 0; the +1 keeps the display honest)
+    assert job["progress"] == {"total": 10, "unit": "epoch", "current": 4}
 
 
 async def test_output_is_teed_to_log_file(mgr, tmp_path):
@@ -140,6 +174,45 @@ async def test_error_prefers_structured_result(mgr, tmp_path):
     job = await mgr.submit(root, "prepare")
     job = await wait_state(mgr, job["id"], "failed")
     assert job["error"] == "validation blew up"
+
+
+async def test_nonce_protects_directives_from_echoed_output(mgr, tmp_path):
+    """Review finding 13: the manager passes each job a nonce in the
+    environment; bare ## lines on a nonce job are log data, however much
+    they look like a directive."""
+    mgr._runner_cmd = forge_runner
+    root = make_project(tmp_path)
+    job = await mgr.submit(root, "prepare")
+    job = await wait_state(mgr, job["id"], "succeeded")
+    assert job["result"]["answer"] == "genuine"
+    assert job["result"]["nonce"]          # the runner really got one
+
+
+async def test_bare_directives_still_work_without_a_nonce(mgr):
+    """A runner spawned without the nonce env (hand-run, not via the
+    manager) keeps the bare directive channel; _on_line gates on the nonce
+    only when one is registered for the job."""
+    assert mgr._on_line("no-nonce-job",
+                        '##RESULT {"answer": "bare"}') == {"answer": "bare"}
+    mgr._nonces["nonce-job"] = "abc123"
+    assert mgr._on_line("nonce-job", '##RESULT {"forged": 1}') is None
+    assert mgr._on_line("nonce-job",
+                        '##abc123 RESULT {"answer": 2}') == {"answer": 2}
+
+
+async def test_epoch_scrape_only_when_epoch_is_the_unit(mgr, tmp_path):
+    """Review finding 12: a prepare job's log mentioning 'Epoch' (a
+    filename, a transcript) must not move a non-epoch progress counter."""
+    SCRAPE_RUNNER_CODE = EMIT_HELPER + (
+        "\n"
+        "emit('TARGET', {\"total\": 7, \"unit\": \"clip\"})\n"
+        "print('Epoch 5: something else entirely')\n"
+        "emit('RESULT', {\"done\": True})\n")
+    mgr._runner_cmd = lambda jd: [sys.executable, "-c", SCRAPE_RUNNER_CODE]
+    root = make_project(tmp_path)
+    job = await mgr.submit(root, "prepare")
+    job = await wait_state(mgr, job["id"], "succeeded")
+    assert job["progress"] == {"total": 7, "unit": "clip"}
 
 
 async def test_one_running_job_per_project(mgr, tmp_path):

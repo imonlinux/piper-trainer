@@ -13,8 +13,12 @@ from piper_trainer import doctor, prepare
 from piper_trainer.api import catalog
 from piper_trainer.api.app import create_app
 
-OK_RUNNER = ("print('job ran')\n"
-             "print('##RESULT {\"done\": true}')\n")
+OK_RUNNER = ("import os, json\n"
+             "def emit(tag, obj):\n"
+             "    n = os.environ.get('PIPER_DIRECTIVE_NONCE', '')\n"
+             "    print(f'##{n} {tag} {json.dumps(obj)}', flush=True)\n"
+             "print('job ran')\n"
+             "emit('RESULT', {\"done\": True})\n")
 SLOW_RUNNER = ("import time\n"
                "print('starting', flush=True)\n"
                "time.sleep(60)\n")
@@ -137,6 +141,14 @@ def test_project_file_serving_scoped(client):
     # non-audio is refused
     assert client.get(
         "/api/projects/p1/files/project.json").status_code == 404
+    # PLAYABLE_EXT: matroska is processed but not served (no browser
+    # <audio> support); opus is both processable and playable
+    (wav / "a.mkv").write_bytes(b"MKV")
+    (wav / "a.opus").write_bytes(b"OPUS")
+    assert client.get(
+        "/api/projects/p1/files/dataset/wavs/a.mkv").status_code == 404
+    assert client.get(
+        "/api/projects/p1/files/dataset/wavs/a.opus").status_code == 200
 
 
 def test_sources_endpoint(client, monkeypatch):
@@ -180,6 +192,26 @@ def test_peaks_endpoint(client, monkeypatch):
 
 # ------------------------------------------------------------------ ingest
 
+def test_ingest_rejects_non_audio_extensions(client):
+    """Review finding 9: an unchecked upload landed in raw/, vanished from
+    sources() and still inflated the directory card."""
+    client.post("/api/projects", json={"name": "p1"})
+    r = client.post("/api/projects/p1/ingest",
+                    files=[("files", ("notes.txt", b"hello", "text/plain"))])
+    assert r.status_code == 400
+    assert "notes.txt" in r.json()["detail"]
+
+
+def test_raw_count_ignores_non_audio_files(client, tmp_path):
+    client.post("/api/projects", json={"name": "p1"})
+    raw = client.app.state.workspace / "p1" / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "take.wav").write_bytes(b"RIFF")
+    (raw / "notes.txt").write_text("stray")
+    detail = client.get("/api/projects/p1").json()
+    assert detail["directories"]["raw"] == 1
+
+
 def test_upload_ingest_creates_job_and_stages(client, tmp_path):
     client.post("/api/projects", json={"name": "p1"})
     r = client.post("/api/projects/p1/ingest",
@@ -204,14 +236,15 @@ def test_upload_ingest_creates_job_and_stages(client, tmp_path):
 
 
 PROBE_RUNNER = (
-    "import sys, json\n"
+    "import sys, os, json\n"
     "from pathlib import Path\n"
     "jd = Path(sys.argv[1])\n"
     "inc = jd / 'incoming'\n"
     "seen = ({p.name: p.stat().st_size for p in inc.iterdir()}\n"
     "        if inc.exists() else None)\n"
     "(jd / 'observed.json').write_text(json.dumps(seen))\n"
-    "print('##RESULT {\"probed\": true}')\n")
+    "n = os.environ.get('PIPER_DIRECTIVE_NONCE', '')\n"
+    "print(f'##{n} RESULT {json.dumps(dict(probed=True))}', flush=True)\n")
 
 
 def test_ingest_stages_every_byte_before_runner_starts(tmp_path):

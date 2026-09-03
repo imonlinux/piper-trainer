@@ -11,8 +11,20 @@ DEFAULT_WORKSPACE = "/workspace"
 
 
 def workspace() -> Path:
-    """Root directory holding one subdirectory per voice project."""
-    return Path(os.environ.get("PIPER_WORKSPACE", DEFAULT_WORKSPACE))
+    """Root directory holding one subdirectory per voice project.
+
+    PIPER_WORKSPACE wins. Otherwise /workspace when it exists (the
+    container layout); on a bare host — where the README's
+    `pip install -e '.[api]'; piper-trainer serve` path runs — fall back
+    to ./workspace so the UI does not silently show an empty project list
+    against a directory that does not exist.
+    """
+    env = os.environ.get("PIPER_WORKSPACE")
+    if env:
+        return Path(env)
+    if Path(DEFAULT_WORKSPACE).exists():
+        return Path(DEFAULT_WORKSPACE)
+    return Path.cwd() / "workspace"
 
 
 def allow_parallel() -> bool:

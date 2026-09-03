@@ -17,6 +17,8 @@ from importlib import resources
 REPO = "rhasspy/piper-checkpoints"
 _TREE_URL = f"https://huggingface.co/api/datasets/{REPO}/tree/main"
 _CACHE_TTL = 600.0  # seconds; the repo changes rarely, sessions shorter
+_SNAPSHOT_TTL = 15.0  # a fallback must not outlive the user's patience:
+                      # the picker's "retry" has to be able to work
 
 _PATH_RE = re.compile(r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){2,3}$")
 
@@ -53,14 +55,21 @@ def live_languages(timeout: float, fetch=_http_json) -> dict:
     return languages
 
 
-_cache: dict = {"at": 0.0, "data": None}
+_cache: dict = {"at": 0.0, "data": None, "source": None}
 
 
 def catalog(timeout: float = 3.0, fetch=_http_json,
-            clock=time.monotonic) -> dict:
-    """Catalog for the picker: live first, snapshot on any failure."""
+            clock=time.monotonic, force: bool = False) -> dict:
+    """Catalog for the picker: live first, snapshot on any failure.
+
+    A snapshot fallback is cached for only _SNAPSHOT_TTL — under the old
+    single TTL, a transient HF outage cached the fallback for ten minutes
+    and the UI's retry link reloaded into the same stale snapshot. `force`
+    skips the cache read entirely (the picker's retry passes it).
+    """
     now = clock()
-    if _cache["data"] is not None and now - _cache["at"] < _CACHE_TTL:
+    ttl = _CACHE_TTL if _cache.get("source") == "live" else _SNAPSHOT_TTL
+    if not force and _cache["data"] is not None and now - _cache["at"] < ttl:
         return _cache["data"]
     try:
         data = {"source": "live", "generated": None,
@@ -71,6 +80,7 @@ def catalog(timeout: float = 3.0, fetch=_http_json,
                 "languages": snap["languages"], "files": snap["files"]}
     _cache["at"] = now
     _cache["data"] = data
+    _cache["source"] = data["source"]
     return data
 
 

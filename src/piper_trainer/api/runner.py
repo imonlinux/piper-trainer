@@ -9,6 +9,10 @@ API layer never re-implements the pipeline) and reports through stdout:
     ##PROGRESS {json}   progress updates; merged into job.json by the manager
     ##RESULT {json}     final stage summary, captured into job.json
 
+When spawned by the manager, directives carry the per-job nonce from
+$PIPER_DIRECTIVE_NONCE (`##<nonce> TARGET {json}`); only those are
+honored, so echoed pipeline output cannot forge one.
+
 The exit code decides succeeded/failed; every other line is log output.
 
 `execute()` is importable so tests can run a stage in-process; `main()` is
@@ -17,6 +21,7 @@ the process entry the job manager spawns.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sys
@@ -35,7 +40,13 @@ from ..validate import validate_dataset
 
 
 def _emit(tag: str, obj: dict) -> None:
-    print(f"##{tag} {json.dumps(obj)}", flush=True)
+    # The manager gives every job a nonce in the environment (review
+    # finding 13): prefixing directives with it means a transcript or
+    # filename echoed on stdout can never pose as one. Bare (no env) keeps
+    # hand-run runners legible.
+    nonce = os.environ.get("PIPER_DIRECTIVE_NONCE", "")
+    prefix = f"##{nonce} " if nonce else "##"
+    print(f"{prefix}{tag} {json.dumps(obj)}", flush=True)
 
 
 def _tier(project: Project, params: dict) -> str:

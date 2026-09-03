@@ -55,7 +55,11 @@ def test_compute_peaks_shape_and_cache(wav):
     assert out["buckets"] == len(out["peaks"]) == 500
     assert 0.4 <= out["duration"] <= 0.6
     assert max(out["peaks"]) > 0.5          # a sine is loud
-    assert (wav.parent / "take.wav.downmix.peaks.json").exists()
+    # the cache lives under work/peaks/, never next to the source:
+    # design §5 labels raw/ "source recordings (never written to)"
+    assert (wav.parent.parent / "work" / "peaks"
+            / "take.wav.downmix.peaks.json").exists()
+    assert not (wav.parent / "take.wav.downmix.peaks.json").exists()
 
     # second call comes from the cache (fingerprints still match)
     cached = peaks.compute_peaks(wav, buckets=500)
@@ -69,13 +73,15 @@ def test_cache_invalidated_by_touch(wav):
     os.utime(wav, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
     again = peaks.compute_peaks(wav, buckets=100)
     assert again["peaks"] == first["peaks"]     # recomputed, same audio
-    data = json.loads((wav.parent / "take.wav.downmix.peaks.json").read_text())
+    data = json.loads((wav.parent.parent / "work" / "peaks"
+                       / "take.wav.downmix.peaks.json").read_text())
     assert data["mtime_ns"] == st.st_mtime_ns + 1_000_000
 
 
 def test_channel_changes_cache_key(wav):
     peaks.compute_peaks(wav, channel="left", buckets=100)
-    assert (wav.parent / "take.wav.left.peaks.json").exists()
+    assert (wav.parent.parent / "work" / "peaks"
+            / "take.wav.left.peaks.json").exists()
     # single-channel source: left channel equals the mono downmix
     a = peaks.compute_peaks(wav, channel="left", buckets=100)
     b = peaks.compute_peaks(wav, channel="downmix", buckets=100)

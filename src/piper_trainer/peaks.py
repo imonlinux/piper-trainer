@@ -48,7 +48,11 @@ def _bucketize(pcm: bytes, buckets: int) -> list[float]:
 
 
 def _cache_path(src: Path, channel: str) -> Path:
-    return src.with_name(f"{src.name}.{channel}.peaks.json")
+    """Cache under work/peaks/, never next to the source: design §5 labels
+    raw/ "source recordings (never written to)", and keeping that invariant
+    is what makes it safe to tell a user their originals are untouched."""
+    return src.parent.parent / "work" / "peaks" / \
+        f"{src.name}.{channel}.peaks.json"
 
 
 def _decode(src: Path, channel: str) -> bytes:
@@ -81,6 +85,7 @@ def compute_peaks(src: Path, channel: str = "downmix",
     peaks = _bucketize(_decode(src, channel), buckets)
     out = {"name": src.name, "channel": channel, "buckets": len(peaks),
            "rate": DECODE_RATE, "duration": duration, "peaks": peaks}
+    cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(
         {**out, "mtime_ns": st.st_mtime_ns, "size": st.st_size}))
     return out

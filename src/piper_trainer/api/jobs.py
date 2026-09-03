@@ -109,6 +109,7 @@ class JobManager:
         self._busy_orphans: set[str] = set()       # subset reserved by rescan
         self._subs: dict[str, set[asyncio.Queue]] = {}
         self._tasks: set[asyncio.Task] = set()     # strong refs, never GC'd
+        self._nonces: dict[str, str] = {}          # per-job directive nonce
 
     # ------------------------------------------------------------- discovery
 
@@ -358,11 +359,19 @@ class JobManager:
                 return
             job = _write_job(jd, state="running", started_at=_now())
             self._broadcast(job_id, {"type": "state", "job": job})
+            # Directives share stdout with the pipeline's own output, so a
+            # transcript or filename that begins a line with "##RESULT "
+            # would parse as a directive (review finding 13). Give every
+            # job a nonce: the real runner prefixes directives with it, and
+            # the manager below ignores bare ## lines on nonce jobs.
+            nonce = secrets.token_hex(8)
+            self._nonces[job_id] = nonce
             proc = await asyncio.create_subprocess_exec(
                 *self._runner_cmd(jd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 start_new_session=True,
+                env={**os.environ, "PIPER_DIRECTIVE_NONCE": nonce},
             )
 
             self._procs[job_id] = proc
@@ -433,6 +442,7 @@ class JobManager:
             # single-slot rule a leaked name blocks every project forever.
             self._procs.pop(job_id, None)
             self._progress.pop(job_id, None)
+            self._nonces.pop(job_id, None)
             self._cancel_requested.discard(job_id)
             self._busy.discard(project_name)
             self._pump()
@@ -448,7 +458,14 @@ class JobManager:
 
     def _on_line(self, job_id: str, text: str) -> dict | None:
         """Interpret one output line; returns a captured RESULT payload."""
-        m = _DIRECTIVE_RE.match(text)
+        nonce = self._nonces.get(job_id)
+        if nonce:
+            # A nonce is in play for this job: only nonce-prefixed lines
+            # are directives, so echoed user data can never forge one.
+            m = (_DIRECTIVE_RE.match("##" + text[len(f"##{nonce} "):])
+                 if text.startswith(f"##{nonce} ") else None)
+        else:
+            m = _DIRECTIVE_RE.match(text)
         if m:
             tag, payload = m.group(1), m.group(2)
             try:
@@ -469,12 +486,16 @@ class JobManager:
                                      "progress": merged})
             self._broadcast(job_id, {"type": "state", "job": job})
             return None
-        # Lightning's progress bar carries the epoch in plain output
+        # Lightning's progress bar carries the epoch in plain output — but
+        # only scrape when epochs are the unit, or a prepare job whose log
+        # mentions "Epoch" moves its clip counter (review finding 12).
+        # Lightning numbers epochs from 0 while TARGET is the absolute
+        # ceiling, so +1 keeps the display from stopping at N-1 of N.
         prog = self._progress.get(job_id)
-        if prog and "unit" in prog:
+        if prog and prog.get("unit") == "epoch":
             em = _PROGRESS_RE.search(text)
             if em and em.group(1) != str(prog.get("current")):
-                prog["current"] = int(em.group(1))
+                prog["current"] = int(em.group(1)) + 1
                 jd = self.job_dir(job_id)
                 job = _write_job(jd, progress=dict(prog))
                 self._broadcast(job_id, {"type": "progress",

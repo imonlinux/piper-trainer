@@ -31,7 +31,6 @@ from . import catalog, settings
 from .jobs import JobError, JobManager
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus"}
 UI_DIR = Path(__file__).resolve().parents[1] / "ui"
 
 
@@ -206,6 +205,15 @@ def create_app(workspace: Path | None = None,
         def count(d: Path) -> int:
             return len(list(d.glob("*"))) if d.exists() else 0
 
+        def count_audio(d: Path) -> int:
+            # the raw/ card counts sources, not stray files (peaks used to
+            # write caches into raw/ and triple the number — finding 8)
+            if not d.exists():
+                return 0
+            return sum(1 for p in d.iterdir()
+                       if p.is_file()
+                       and p.suffix.lower() in prepare.AUDIO_EXT)
+
         rows, problems = [], []
         endings = None
         if proj.metadata.exists():
@@ -218,7 +226,7 @@ def create_app(workspace: Path | None = None,
                        ("espeak_voice", "tier", "catalog_path",
                         "target_epochs", "transcripts_provided")},
             "directories": {
-                "raw": count(proj.raw),
+                "raw": count_audio(proj.raw),
                 "work/48k": count(proj.work48k),
                 "work/denoised": count(proj.denoised),
                 "work/clips": count(proj.clips),
@@ -259,7 +267,7 @@ def create_app(workspace: Path | None = None,
         root = proj.root.resolve()
         if not str(full).startswith(str(root) + "/"):
             raise HTTPException(400, "path escapes the project")
-        if full.suffix.lower() not in AUDIO_EXT or not full.is_file():
+        if full.suffix.lower() not in prepare.PLAYABLE_EXT or not full.is_file():
             raise HTTPException(404, "not a project audio file")
         return FileResponse(full)
 
@@ -292,6 +300,15 @@ def create_app(workspace: Path | None = None,
         proj = project_or_404(project_id)
         if not files:
             raise HTTPException(400, "no files uploaded")
+        # refuse what the pipeline can never recognise, before any byte is
+        # staged: an unchecked upload landed in raw/, vanished from
+        # sources() and still inflated the directory card (finding 9)
+        rejected = [f.filename for f in files
+                    if Path(f.filename or "").suffix.lower()
+                    not in prepare.AUDIO_EXT]
+        if rejected:
+            raise HTTPException(400, "not a recognized audio type: "
+                                + ", ".join(rejected))
         # Stage every byte before a runner can exist. submit(run=False)
         # creates the job record without enqueueing it; the runner starts
         # only after the last chunk lands. Submitting first used to let the
@@ -384,8 +401,8 @@ def create_app(workspace: Path | None = None,
     # ---------------------------------------------------------- checkpoints
 
     @app.get("/api/checkpoints/catalog")
-    def checkpoints_catalog():
-        return catalog.catalog()
+    def checkpoints_catalog(refresh: bool = False):
+        return catalog.catalog(force=refresh)
 
     @app.get("/api/checkpoints/catalog/{path:path}")
     def checkpoints_detail(path: str):

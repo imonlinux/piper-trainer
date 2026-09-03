@@ -59,7 +59,13 @@ async function newProjectPage() {
   const notice = cat.source === "snapshot"
     ? el("p", { class: "notice" },
         `showing cached catalog from ${cat.generated} (HF unreachable) — `,
-        el("a", { href: "#/new", onclick: () => setTimeout(() => location.reload(), 0) }, "retry"))
+        el("a", { href: "#/new", onclick: async (e) => {
+          // a plain reload used to serve the same cached snapshot for ten
+          // minutes; refresh=1 skips the server cache before we redraw
+          e.preventDefault();
+          await api("/checkpoints/catalog?refresh=1").catch(() => null);
+          location.reload();
+        } }, "retry"))
     : el("p", { class: "muted" }, "catalog: live");
 
   const langs = Object.keys(cat.languages).sort();
@@ -258,6 +264,23 @@ async function preparePage(name) {
   }
   const msg = el("span", { class: "muted" });
 
+  // -- failed preview jobs: a preview that dies writes no preview.json, so
+  // the sweep alone would sit on "queued…" forever with the failure only
+  // visible in the job log on another page (review finding 11)
+  const failWrap = el("div", {});
+  let failFp = "";
+  async function loadFailedJobs() {
+    const jobs = await api(`/projects/${name}/jobs`).catch(() => []);
+    const fails = jobs.filter(j =>
+      j.kind === "preview" && j.state === "failed");
+    const fp = fails.map(j => j.id).join();
+    if (fp === failFp) return;
+    failFp = fp;
+    failWrap.replaceChildren(...fails.map(j =>
+      el("p", { class: "error" },
+        `preview job ${j.id} failed: ${j.error || "unknown error"}`)));
+  }
+
   // -- sweep (grouped by stage, newest first)
   const segWrap = el("div", {});
   const dnWrap = el("div", {});
@@ -387,6 +410,7 @@ async function preparePage(name) {
       el("button", { onclick: runDenoisePreview, disabled: srcs.length ? null : "" },
         "preview denoise A/B"),
       msg),
+    failWrap,
     el("h2", {}, "Clips"),
     clipWrap,
     el("h2", {}, "Segment sweep"),
@@ -397,9 +421,13 @@ async function preparePage(name) {
 
   if (srcs.length) await loadPeaks();
   await loadSweep();
+  await loadFailedJobs();
   clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
-    try { await loadSweep(); } catch {}
+    try {
+      await loadSweep();
+      await loadFailedJobs();
+    } catch {}
   }, 2000);
 }
 
