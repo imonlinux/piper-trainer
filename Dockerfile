@@ -19,8 +19,8 @@
 # --------------------------------------------------------- React UI build
 # Decision §8.4: React, with the build step in the image — annoying but
 # bounded. ui-src/ builds to a static bundle that lands in
-# src/piper_trainer/ui/app/ and rides the existing /ui StaticFiles mount;
-# Bones stays alongside until the React app reaches parity (§6/§9).
+# src/piper_trainer/ui/ (the UI_DIR root) and rides the existing /ui
+# StaticFiles mount as the only UI.
 # This stage sits FIRST on purpose: the python stage below must stay
 # contiguous — anything after a second FROM would execute in whatever
 # stage that FROM declared.
@@ -30,8 +30,8 @@ COPY ui-src/package.json ui-src/package-lock.json ./
 RUN npm ci
 COPY ui-src/ ./
 # --outDir overrides vite.config.ts's repo-relative path (that one is for
-# local `npm run build` writing straight into src/piper_trainer/ui/app).
-RUN npm run build -- --outDir /out/app --emptyOutDir
+# local `npm run build` writing straight into src/piper_trainer/ui/).
+RUN npm run build -- --outDir /out --emptyOutDir
 
 FROM python:3.12-slim-bookworm
 
@@ -186,7 +186,7 @@ EXPOSE 8000
 # --------------------------------------------------------- piper-trainer CLI
 COPY pyproject.toml /opt/piper-trainer/pyproject.toml
 COPY src /opt/piper-trainer/src
-COPY --from=ui-build /out/app /opt/piper-trainer/src/piper_trainer/ui/app
+COPY --from=ui-build /out/ /opt/piper-trainer/src/piper_trainer/ui/
 RUN python3 -m pip install -e /opt/piper-trainer --no-deps
 
 # ------------------------------------------------------------- versions stamp
@@ -236,7 +236,7 @@ RUN python3 -c "from piper import espeakbridge" \
     && python3 -c "import piper.train.__main__" \
     && python3 -c "import piper_trainer.api.app" \
     && test -f /opt/piper-trainer/src/piper_trainer/ui/index.html \
-    && test -f /opt/piper-trainer/src/piper_trainer/ui/app/index.html
+    && test -n "$(ls /opt/piper-trainer/src/piper_trainer/ui/assets)"
 
 ENTRYPOINT ["piper-trainer"]
 CMD ["doctor"]

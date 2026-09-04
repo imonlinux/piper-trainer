@@ -14,8 +14,8 @@ type Route =
   | { page: "project"; name: string }
   | { page: "prepare"; name: string };
 
-// Same hash routes as Bones: bookmarks and muscle memory keep working,
-// and the two UIs can run side by side during the transition.
+// Same hash routes the pre-React UI used: bookmarks and muscle memory
+// keep working across the cutover.
 function parseRoute(hash: string): Route {
   const h = hash || "#/projects";
   if (h === "#/new") return { page: "new" };
@@ -61,7 +61,7 @@ export default function App() {
     <>
       <header>
         <strong>piper-trainer</strong>
-        <span className="tag">react — step 2</span>
+        <span className="tag">react</span>
         <nav>
           <a href="#/projects">Projects</a>
           <a href="#/new">New project</a>

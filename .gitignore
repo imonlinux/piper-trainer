@@ -3,7 +3,9 @@ __pycache__/
 .pytest_cache/
 
 # React UI: sources are committed, the built bundle is not (the Docker
-# image builds it — design doc §8, decision 4).
+# image builds it — design doc §8, decision 4). The bundle builds straight
+# into src/piper_trainer/ui/ (index.html + assets/).
 ui-src/node_modules/
 ui-src/dist/
-src/piper_trainer/ui/app/
+src/piper_trainer/ui/index.html
+src/piper_trainer/ui/assets/

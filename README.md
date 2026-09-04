@@ -284,9 +284,9 @@ recordings/
 
 Deliberately human-readable and toolchain-compatible: every file works with the bare piper1-gpl CLI. The dataset is the durable asset — it outlives Piper, VITS, and this project.
 
-## API server and Bones UI
+## API server and web UI
 
-The same pipeline functions the CLI calls, served over HTTP, with a job runner in front of everything long-running. Specified in `docs/piper-trainer-ui-design.md` (§1 jobs, §4 endpoints, §9 "Bones" scope); the API is the product and the UI is just its first client.
+The same pipeline functions the CLI calls, served over HTTP, with a job runner in front of everything long-running. Specified in `docs/piper-trainer-ui-design.md` (§1 jobs, §4 endpoints); the API is the product and the UI is just its first client.
 
 ```bash
 pip install -e '.[api]'
@@ -307,7 +307,7 @@ run.sh is the supported launcher — it picks the right UID mapping, GPU groups,
 docker compose --profile rocm run --rm --service-ports trainer-rocm serve --host 0.0.0.0
 ```
 
-The Bones UI is served at `/` — project list and detail, upload, checkpoint picker, run/cancel buttons, live log tail. It is deliberately ugly static HTML; React arrives with the segment tuner.
+The React UI is served at `/` (`/ui/`) — project list and detail, upload, checkpoint picker, run/cancel buttons, the prepare tuner with waveform previews, and a live log tail. Sources live in `ui-src/` (Vite + React + TypeScript); the built bundle is not committed — the image builds it, and local `npm run build` inside `ui-src/` writes it straight into `src/piper_trainer/ui/`.
 
 The job runner (`api/jobs.py`) makes four decisions worth knowing before you extend it:
 

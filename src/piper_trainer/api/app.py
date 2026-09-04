@@ -516,11 +516,19 @@ def create_app(workspace: Path | None = None,
         return RedirectResponse("/ui/")
 
     if UI_DIR.exists():
+        # Pre-cutover bookmarks pointed at /ui/app/#/...; the hash fragment
+        # is client-side only, so a 308 to /ui/ keeps it (browsers re-attach
+        # the original fragment when Location has none).
+        @app.get("/ui/app", include_in_schema=False)
+        @app.get("/ui/app/{rest:path}", include_in_schema=False)
+        def legacy_ui_app(rest: str = ""):
+            return RedirectResponse("/ui/", status_code=308)
+
         app.mount("/ui", StaticFiles(directory=UI_DIR, html=True),
                   name="ui")
 
-        # Heuristic browser caching served stale bones.js after pulls, so a
-        # fixed UI looked unfixed. no-cache keeps the ETag 304 but forces a
+        # Heuristic browser caching served stale JS after pulls, so a fixed
+        # UI looked unfixed. no-cache keeps the ETag 304 but forces a
         # revalidation round-trip on every load.
         @app.middleware("http")
         async def revalidate_ui(request, call_next):
