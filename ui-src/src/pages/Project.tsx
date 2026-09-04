@@ -29,6 +29,8 @@ export function ProjectPage({ name }: { name: string }) {
   const [p, setP] = useState<ProjectDetail | null>(null);
   const [loadError, setLoadError] = useState<Error | null>(null);
   const [sources, setSources] = useState<SourceInfo[]>([]);
+  const [selSources, setSelSources] = useState<Set<string>>(new Set());
+  const [sourceMsg, setSourceMsg] = useState("");
   const [actionError, setActionError] = useState("");
   const [uploadError, setUploadError] = useState("");
   // Set right after an upload POST: the ingest runs as a job, so the
@@ -54,7 +56,17 @@ export function ProjectPage({ name }: { name: string }) {
 
   function loadSources(): void {
     get<SourceInfo[]>(`/projects/${name}/sources`)
-      .then((s) => setSources(s))
+      .then((s) => {
+        setSources(s);
+        // a reload can only shrink the eligible set (files moved out from
+        // under us) — drop selections that no longer resolve
+        setSelSources((prev) => {
+          const next = new Set(
+            [...prev].filter((n) => s.some((x) => x.name === n)),
+          );
+          return next.size === prev.size ? prev : next;
+        });
+      })
       .catch(() => setSources([]));
   }
 
@@ -224,6 +236,34 @@ export function ProjectPage({ name }: { name: string }) {
     await runJob("train", params);
   }
 
+  async function doDeleteSources(): Promise<void> {
+    const names = [...selSources];
+    if (names.length === 0) return;
+    if (
+      !confirm(
+        `Move ${names.length} source file(s) to .trash?\n${names.join("\n")}\nNothing is destroyed.`,
+      )
+    )
+      return;
+    setActionError("");
+    setSourceMsg("");
+    try {
+      const res = await post<{ moved: string[]; missing: string[] }>(
+        `/projects/${name}/sources/delete`,
+        { names },
+      );
+      setSelSources(new Set());
+      setSourceMsg(
+        `moved ${res.moved.length} to .trash` +
+          (res.missing.length ? ` · not found: ${res.missing.join(", ")}` : ""),
+      );
+      loadSources();
+      load(); // the raw/ directory card counts sources
+    } catch (ex) {
+      setActionError(String(ex));
+    }
+  }
+
   async function doDelete(): Promise<void> {
     if (!confirm(`Move project "${name}" to .trash? Nothing is destroyed.`))
       return;
@@ -272,6 +312,22 @@ export function ProjectPage({ name }: { name: string }) {
         <table>
           <thead>
             <tr>
+              <th>
+                <input
+                  type="checkbox"
+                  aria-label="select all sources"
+                  checked={
+                    sources.length > 0 && selSources.size === sources.length
+                  }
+                  onChange={(e) =>
+                    setSelSources(
+                      e.target.checked
+                        ? new Set(sources.map((s) => s.name))
+                        : new Set(),
+                    )
+                  }
+                />
+              </th>
               <th>name</th>
               <th>codec</th>
               <th>rate</th>
@@ -282,6 +338,21 @@ export function ProjectPage({ name }: { name: string }) {
           <tbody>
             {sources.map((s) => (
               <tr key={s.name}>
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={`select ${s.name}`}
+                    checked={selSources.has(s.name)}
+                    onChange={(e) =>
+                      setSelSources((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(s.name);
+                        else next.delete(s.name);
+                        return next;
+                      })
+                    }
+                  />
+                </td>
                 <td>{s.name}</td>
                 <td>{s.codec ?? "?"}</td>
                 <td className="num">{s.sample_rate ?? "?"}</td>
@@ -292,6 +363,15 @@ export function ProjectPage({ name }: { name: string }) {
           </tbody>
         </table>
       )}
+      <p className="row">
+        <button
+          disabled={selSources.size === 0}
+          onClick={() => void doDeleteSources()}
+        >
+          delete selected ({selSources.size})
+        </button>
+        {sourceMsg && <span className="muted">{sourceMsg}</span>}
+      </p>
       <form
         className="row"
         onSubmit={(e) => {

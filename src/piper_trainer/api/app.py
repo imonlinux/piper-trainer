@@ -61,6 +61,10 @@ class TranscriptEdit(BaseModel):
     text: str
 
 
+class SourceDelete(BaseModel):
+    names: list[str]
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -296,6 +300,24 @@ def create_app(workspace: Path | None = None,
             return peaks.compute_peaks(src, channel=channel, buckets=buckets)
         except subprocess.CalledProcessError as exc:
             raise HTTPException(422, "ffmpeg could not decode this file") from exc
+
+    @app.post("/api/projects/{project_id}/sources/delete")
+    def delete_sources(project_id: str, body: SourceDelete):
+        """Bulk-remove raw/ sources by moving them to .trash (§0: nothing
+        is destroyed). Refuses while a job that reads raw/ is live."""
+        proj = project_or_404(project_id)
+        if not body.names:
+            raise HTTPException(400, "no sources named")
+        busy = [j["id"] for j in manager().list_for_project(proj.root)
+                if j["state"] in ("running", "queued")
+                and j["kind"] in ("ingest", "prepare", "preview")]
+        if busy:
+            raise HTTPException(409, "jobs reading raw/ are active: "
+                                + ", ".join(busy))
+        try:
+            return prepare.delete_sources(proj, body.names)
+        except LockBusy as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     # -------------------------------------------------------------- ingest
 

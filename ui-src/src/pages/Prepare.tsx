@@ -146,6 +146,32 @@ export function PreparePage({ name }: { name: string }) {
     sweepFp.current = ""; // force the next poll to redraw
   }
 
+  // The source just auditioned turned out to be bad (0 clips, garbage
+  // audio): remove it without a round trip to the project page. The
+  // backend moves it to .trash, so a mistyped confirm is recoverable.
+  async function deleteCurrent(): Promise<void> {
+    if (!source) return;
+    if (!confirm(`Move "${source}" to .trash? Nothing is destroyed.`)) return;
+    setError("");
+    setMessage("");
+    try {
+      const res = await post<{ moved: string[]; missing: string[] }>(
+        `/projects/${name}/sources/delete`,
+        { names: [source] },
+      );
+      const fresh = await get<SourceInfo[]>(`/projects/${name}/sources`);
+      setSources(fresh);
+      setSource(fresh[0]?.name ?? "");
+      setPeaks(null);
+      setMessage(
+        `moved to .trash: ${res.moved.join(", ") || "nothing"}` +
+          (res.missing.length ? ` · not found: ${res.missing.join(", ")}` : ""),
+      );
+    } catch (ex) {
+      setError(String(ex));
+    }
+  }
+
   if (gone) {
     return (
       <>
@@ -194,6 +220,9 @@ export function PreparePage({ name }: { name: string }) {
             {c}
           </label>
         ))}
+        <button disabled={!source} onClick={() => void deleteCurrent()}>
+          delete this source
+        </button>
       </div>
       {hasSources ? (
         <Wave data={peaks} regions={regions} />

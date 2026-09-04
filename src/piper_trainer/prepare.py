@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Project, TIERS
+from .lock import project_lock
 
 # The one list of processable audio containers: what the pipeline (and
 # sources()/peaks.is_audio) recognise. app.py serves playback from
@@ -71,6 +72,38 @@ def sources(project: Project) -> list[dict]:
                     "duration": info.get("duration"),
                     "size": src.stat().st_size})
     return out
+
+
+def delete_sources(project: Project, names: list[str]) -> dict:
+    """Move raw/ sources to the workspace .trash (§0 — nothing is destroyed).
+
+    Returns {"moved": [...], "missing": [...]}. A name is a basename:
+    sources live in raw/, never at a path, and only files sources()
+    would list are eligible. The move sits under the project lock so a
+    concurrent prepare/preview cannot watch a file vanish mid-read.
+    """
+    moved: list[str] = []
+    missing: list[str] = []
+    targets: list[tuple[str, Path]] = []
+    for name in dict.fromkeys(names):  # dedupe, keep order
+        safe = Path(name).name
+        src = project.raw / safe
+        if (not safe or safe in (".", "..")
+                or src.suffix.lower() not in AUDIO_EXT
+                or not src.is_file()):
+            missing.append(name)
+            continue
+        targets.append((name, src))
+    if targets:
+        trash = project.root.parent / ".trash"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = trash / f"{project.root.name}-sources-{stamp}"
+        dest.mkdir(parents=True, exist_ok=True)
+        with project_lock(project, "api:delete-sources", wait=2.0):
+            for name, src in targets:
+                shutil.move(str(src), str(dest / src.name))
+                moved.append(name)
+    return {"moved": moved, "missing": missing}
 
 
 # --------------------------------------------------------------- stage plumbing
