@@ -27,7 +27,8 @@ from pydantic import BaseModel
 
 from .. import doctor, peaks, prepare
 from ..config import Project, TIERS
-from . import catalog, settings
+from ..lock import LockBusy
+from . import catalog, dataset as dataset_mod, settings
 from .jobs import JobError, JobManager
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -54,6 +55,10 @@ class FetchCreate(BaseModel):
 class PreviewCreate(BaseModel):
     stage: str
     params: dict = {}
+
+
+class TranscriptEdit(BaseModel):
+    text: str
 
 
 def _now() -> str:
@@ -508,6 +513,30 @@ def create_app(workspace: Path | None = None,
         proj = project_or_404(project_id)
         shutil.rmtree(proj.root / "work" / "preview", ignore_errors=True)
         return {"pruned": True}
+
+    # --------------------------------------------------------------- dataset
+    # Audit screen (§6.3): the dataset table and inline transcript editing.
+    # Validation findings and clean/restore are job kinds — the UI reads the
+    # latest validate/clean job's result and submits clean jobs like any other.
+
+    @app.get("/api/projects/{project_id}/dataset")
+    def project_dataset(project_id: str):
+        proj = project_or_404(project_id)
+        return {"rows": dataset_mod.rows(proj),
+                "quarantine": dataset_mod.quarantine(proj)}
+
+    @app.patch("/api/projects/{project_id}/dataset/{clip_id}")
+    def edit_transcript(project_id: str, clip_id: str,
+                        body: TranscriptEdit):
+        proj = project_or_404(project_id)
+        try:
+            return dataset_mod.set_text(proj, clip_id, body.text)
+        except dataset_mod.ClipNotFound as exc:
+            raise HTTPException(404, str(exc)) from None
+        except dataset_mod.BadText as exc:
+            raise HTTPException(400, str(exc)) from None
+        except LockBusy as exc:
+            raise HTTPException(409, str(exc)) from None
 
     # --------------------------------------------------------------- static
 

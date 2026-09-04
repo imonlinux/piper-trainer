@@ -40,6 +40,13 @@ export const postEmpty = <T,>(path: string): Promise<T> =>
 export const del = <T,>(path: string): Promise<T> =>
   api<T>(path, { method: "DELETE" });
 
+export const patch = <T,>(path: string, body: unknown): Promise<T> =>
+  api<T>(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
 // Multipart (upload ingest): never set Content-Type by hand — the
 // browser must add the boundary.
 export const upload = <T,>(path: string, form: FormData): Promise<T> =>

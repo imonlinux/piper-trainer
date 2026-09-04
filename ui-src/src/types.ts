@@ -73,6 +73,42 @@ export interface Peaks {
   peaks: number[];
 }
 
+// One row of GET /api/projects/{name}/dataset (Audit screen §6.3).
+// Text comes from metadata.csv (source of truth); scores join from
+// audit.csv; `missing`/`quarantined` come from the filesystem + manifest.
+export interface DatasetRow {
+  id: string;
+  text: string;
+  duration: number | null;
+  cps: number | null;
+  lang_prob: number | null;
+  missing: boolean;
+  quarantined: boolean;
+}
+
+export interface QuarantineEntry {
+  timestamp: string;
+  clip_id: string;
+  action: string;
+  reasons: string;
+  text: string;
+}
+
+export interface Dataset {
+  rows: DatasetRow[];
+  quarantine: QuarantineEntry[];
+}
+
+// One validation finding (result of a validate/clean job).
+// `ids` names affected clip stems; findings without ids are dataset-level.
+export interface Finding {
+  level: "error" | "warn" | "info" | string;
+  code: string;
+  message: string;
+  ids: string[];
+  action: string | null;
+}
+
 export interface Catalog {
   source: "live" | "snapshot" | string;
   generated: string | null;

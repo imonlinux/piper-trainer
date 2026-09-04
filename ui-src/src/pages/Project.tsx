@@ -306,6 +306,8 @@ export function ProjectPage({ name }: { name: string }) {
       <h2>Jobs</h2>
       <p>
         <a href={`#/prepare/${name}`}>prepare tuner (segment preview + promote)</a>
+        {" · "}
+        <a href={`#/audit/${name}`}>audit dataset (transcripts, validation, clean)</a>
       </p>
       <div className="row">
         <button onClick={() => void runJob("prepare")}>run prepare</button>

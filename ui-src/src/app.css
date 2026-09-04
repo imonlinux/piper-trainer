@@ -56,3 +56,21 @@ pre.log {
 }
 label.inline { display: inline-flex; gap: 6px; align-items: center; margin: 0; font-weight: 400; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* ------------------------------------------------ audit (§6.3) */
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { background: #e8e8e8; }
+.chip {
+  border: 1px solid #ccc; background: #fff; border-radius: 999px;
+  padding: 1px 10px; font-size: 12px; cursor: pointer;
+}
+.chip[aria-pressed="true"] { background: #0366d6; border-color: #0366d6; color: #fff; }
+.chip-error { border-color: #cb2431; color: #cb2431; }
+.chip-error[aria-pressed="true"] { background: #cb2431; border-color: #cb2431; color: #fff; }
+.chip-warn { border-color: #b08800; color: #916a00; }
+.chip-warn[aria-pressed="true"] { background: #b08800; border-color: #b08800; color: #fff; }
+tr.row-missing td { background: #fff8c5; }
+tr.row-quarantined td { color: #777; text-decoration: line-through; }
+td.transcript { min-width: 320px; }
+td.transcript textarea { width: 100%; min-height: 2.2em; font: inherit; }
+tr.playing td { background: #f0f6ff; }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { get } from "./api";
 import { useHashRoute } from "./hooks";
+import { AuditPage } from "./pages/Audit";
 import { DoctorPage } from "./pages/Doctor";
 import { NewProjectPage } from "./pages/NewProject";
 import { PreparePage } from "./pages/Prepare";
@@ -12,7 +13,8 @@ type Route =
   | { page: "new" }
   | { page: "doctor" }
   | { page: "project"; name: string }
-  | { page: "prepare"; name: string };
+  | { page: "prepare"; name: string }
+  | { page: "audit"; name: string };
 
 // Same hash routes the pre-React UI used: bookmarks and muscle memory
 // keep working across the cutover.
@@ -24,6 +26,8 @@ function parseRoute(hash: string): Route {
     return { page: "project", name: decodeURIComponent(h.slice(10)) };
   if (h.startsWith("#/prepare/"))
     return { page: "prepare", name: decodeURIComponent(h.slice(10)) };
+  if (h.startsWith("#/audit/"))
+    return { page: "audit", name: decodeURIComponent(h.slice(8)) };
   return { page: "projects" };
 }
 
@@ -53,6 +57,9 @@ export default function App() {
       break;
     case "prepare":
       page = <PreparePage key={route.name} name={route.name} />;
+      break;
+    case "audit":
+      page = <AuditPage key={route.name} name={route.name} />;
       break;
     default:
       page = <ProjectsPage />;
