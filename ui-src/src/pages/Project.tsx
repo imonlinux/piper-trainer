@@ -473,6 +473,15 @@ export function ProjectPage({ name }: { name: string }) {
         <button onClick={() => void runJob("transcribe")}>run transcribe</button>
         <button onClick={() => void runJob("export")}>run export</button>
       </div>
+      {p.prepare_params && Object.keys(p.prepare_params).length > 0 && (
+        <p className="muted">
+          run prepare replays the promoted tuner settings:{" "}
+          {Object.entries(p.prepare_params)
+            .filter(([k]) => k !== "source")
+            .map(([k, v]) => `${k.replaceAll("_", " ")} ${String(v)}`)
+            .join(" · ")}
+        </p>
+      )}
       {actionError && <p className="error">{actionError}</p>}
       <JobsTable
         jobs={jobs}

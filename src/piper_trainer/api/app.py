@@ -135,7 +135,8 @@ def create_app(workspace: Path | None = None,
                 "state": jobs[0]["state"]} if jobs else None
         return {"name": root.name, "path": str(root.root), "clips": clips,
                 "minutes": minutes, "tiers_trained": tiers_trained,
-                "last_job": last}
+                "last_job": last,
+                "prepare_params": root.get("prepare_params")}
 
     # -------------------------------------------------------------- system
 
@@ -365,10 +366,15 @@ def create_app(workspace: Path | None = None,
     @app.post("/api/projects/{project_id}/jobs", status_code=202)
     async def create_job(project_id: str, body: JobCreate):
         proj = project_or_404(project_id)
+        params = dict(body.params or {})
+        if body.kind == "prepare":
+            # promote saves the tuner's winning dials as prepare_params;
+            # a plain "run prepare" starts from those, explicit params win
+            params = {**(proj.get("prepare_params") or {}), **params}
         try:
             return await manager().submit(proj.root, body.kind,
                                           stage=body.stage,
-                                          params=body.params)
+                                          params=params)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
 
@@ -574,6 +580,11 @@ def create_app(workspace: Path | None = None,
         params.pop("stage", None)
         # _prepare maps the tuner's parameters (pad -> leading/trailing
         # silence, denoise -> denoise_enabled) exactly as the preview ran them
+        proj.set(prepare_params=params)
+        # saved so the project page's "run prepare" (empty params) replays
+        # the promoted settings instead of falling back to code defaults —
+        # a later re-prepare at defaults would otherwise re-segment at
+        # energy 55 and quietly drop every quiet source again
         return await manager().submit(proj.root, "prepare", params=params)
 
     @app.delete("/api/projects/{project_id}/previews")

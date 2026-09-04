@@ -410,6 +410,9 @@ def test_preview_endpoints(client, tmp_path):
     job = r.json()
     assert job["kind"] == "prepare"
     assert job["params"] == {"source": "take.wav", "energy_threshold": 40}
+    # ...and saves them, so a plain "run prepare" replays the winner
+    assert json.loads((root / "project.json").read_text())["prepare_params"] == {
+        "source": "take.wav", "energy_threshold": 40}
 
     assert client.post("/api/projects/p1/previews/nope/promote").status_code == 404
     # a routable id that fails the NAME_RE guard (no path tricks needed)
@@ -419,6 +422,37 @@ def test_preview_endpoints(client, tmp_path):
     # prune clears the whole scratch tree (§2.1: previews are discardable)
     assert client.delete("/api/projects/p1/previews").json() == {"pruned": True}
     assert client.get("/api/projects/p1/previews").json() == []
+
+
+def test_run_prepare_replays_promoted_params(client, tmp_path):
+    """The project page's "run prepare" posts empty params; it must start
+    from the tuner's promoted dials, not silently fall back to defaults."""
+    client.post("/api/projects", json={"name": "p1"})
+    root = tmp_path / "p1"
+    write_preview(root, "segment", "20260901T000000Z-preview-aaaa",
+                  {"source": "take.wav", "energy_threshold": 41,
+                   "min_dur": 1.0})
+    client.post(
+        "/api/projects/p1/previews/20260901T000000Z-preview-aaaa/promote")
+
+    job = client.post("/api/projects/p1/jobs",
+                      json={"kind": "prepare", "params": {}}).json()
+    assert job["params"] == {"source": "take.wav", "energy_threshold": 41,
+                             "min_dur": 1.0}
+
+    # explicit params win over the saved ones, key by key
+    job = client.post(
+        "/api/projects/p1/jobs",
+        json={"kind": "prepare", "params": {"energy_threshold": 30}},
+    ).json()
+    assert job["params"] == {"source": "take.wav", "energy_threshold": 30,
+                             "min_dur": 1.0}
+
+    # no promote yet -> plain defaults, unchanged behavior
+    client.post("/api/projects", json={"name": "p2"})
+    job = client.post("/api/projects/p2/jobs",
+                      json={"kind": "prepare", "params": {}}).json()
+    assert job["params"] == {}
 
 
 def test_preview_submit_rejects_unknown_stage(client):

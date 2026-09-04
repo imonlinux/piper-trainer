@@ -41,6 +41,7 @@ export interface ProjectSummary {
   minutes: number | null;
   tiers_trained: string[];
   last_job: { kind: string; state: string } | null;
+  prepare_params?: Record<string, unknown> | null;
 }
 
 export interface ProjectConfig {
