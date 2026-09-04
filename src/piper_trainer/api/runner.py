@@ -515,6 +515,79 @@ def _preview_segment(project: Project, params: dict, emit) -> dict:
     return _write_preview(pdir, "segment", params, result)
 
 
+def _preview_segment_all(project: Project, params: dict, emit) -> dict:
+    """Batch form of the segment preview: every raw source through one dial
+    set, one row each. After a handful of single-file previews the winning
+    dials are usually obvious; this proves them against the whole set —
+    and names every source they would leave at zero — before promote
+    commits a full run. No playable clips are kept (counts and levels are
+    the product here; the single-source preview stays the listening tool),
+    and one bad source records an error row instead of killing the batch.
+    """
+    srcs = [project.raw / s["name"] for s in prepare.sources(project)]
+    if not srcs:
+        raise RuntimeError("no sources in raw/ to preview")
+    emit("TARGET", {"total": len(srcs), "unit": "source"})
+    pdir = _preview_dir(project, params, "segment-all")
+    workdir = pdir / "_work"
+    threshold = float(params.get("energy_threshold", 55))
+    dials = dict(
+        energy_threshold=threshold,
+        min_dur=float(params.get("min_dur", 1.5)),
+        max_dur=float(params.get("max_dur", 10.0)),
+        max_silence=float(params.get("max_silence", 0.4)),
+        max_leading_silence=float(params.get("pad", 0.15)),
+        max_trailing_silence=float(params.get("pad", 0.15)))
+    denoise = params.get("denoise", True)
+
+    per_source: list[dict] = []
+    all_durs: list[float] = []
+    for i, src in enumerate(srcs, start=1):
+        workdir.mkdir(parents=True, exist_ok=True)
+        work = workdir / f"{src.stem}-48k.wav"
+        try:
+            prepare.convert_one(src, work, channel=params.get("channel"))
+            if denoise:
+                # same rule as the single preview: judge the audio a full
+                # run would actually split
+                prepare.denoise_file(work, workdir / "_dn")
+                (workdir / "_dn" / work.name).replace(work)
+                (workdir / "_dn").rmdir()
+            clips = prepare.split_audio(work, workdir / "clips",
+                                        stem=src.stem, **dials)
+            level = prepare.wav_level_dbfs(work)
+            durs = [c["end"] - c["start"] for c in clips]
+            all_durs.extend(durs)
+            row = {"source": src.name, "clips": len(clips),
+                   "seconds": round(sum(durs), 2), "level": level,
+                   "error": None}
+            print(f"segment-all: {src.name}: {len(clips)} clips", flush=True)
+            if not clips:
+                print(f"! segment-all: {src.name}: 0 clips — speech "
+                      f"{level['speech_dbfs']} dBFS vs threshold "
+                      f"{threshold:g} (rejects below "
+                      f"{threshold - prepare.INT16_FULL_SCALE_DB:.1f} dBFS)",
+                      flush=True)
+        except Exception as exc:  # one bad file must not kill the batch
+            row = {"source": src.name, "clips": 0, "seconds": 0,
+                   "level": None, "error": str(exc)}
+            print(f"! segment-all: {src.name}: failed: {exc}", flush=True)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+            emit("PROGRESS", {"current": i, "total": len(srcs),
+                              "unit": "source"})
+        per_source.append(row)
+    zeros = sorted(r["source"] for r in per_source if r["clips"] == 0)
+    result = {"clip_count": sum(r["clips"] for r in per_source),
+              "duration_total": round(sum(all_durs), 2),
+              "histogram": _histogram(all_durs),
+              "per_source": per_source,
+              "zeros": zeros,
+              "audio": []}
+    emit("TARGET", {"total": result["clip_count"], "unit": "clip"})
+    return _write_preview(pdir, "segment-all", params, result)
+
+
 def _preview_denoise(project: Project, params: dict, emit) -> dict:
     """§2.2 denoise preview: an excerpt, original vs denoised. Judge
     sibilants, breaths, plosives — metallic or gated means back off."""
@@ -542,11 +615,13 @@ def _preview(project: Project, params: dict, emit) -> dict:
     stage = params.get("stage")
     if stage == "segment":
         return _preview_segment(project, params, emit)
+    if stage == "segment-all":
+        return _preview_segment_all(project, params, emit)
     if stage == "denoise":
         return _preview_denoise(project, params, emit)
     raise RuntimeError(f"unknown preview stage {stage!r} "
-                       "(step 2 ships segment and denoise; finalize, "
-                       "transcribe, train and audition arrive later)")
+                       "(segment, segment-all and denoise ship today; "
+                       "finalize, transcribe, train and audition later)")
 
 
 HANDLERS = {

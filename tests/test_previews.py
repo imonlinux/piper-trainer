@@ -139,6 +139,67 @@ def test_preview_writes_only_to_preview_dir(tmp_path, segment_stubs):
     assert not (root / "work" / "clips").exists()
 
 
+def test_segment_all_preview_reports_per_source(tmp_path, segment_stubs,
+                                                monkeypatch):
+    """Batch form: one row per raw source, zeros named, one bad file an
+    error row instead of a dead job."""
+    jd, root = make_job(tmp_path, {"stage": "segment-all",
+                                   "energy_threshold": 40})
+    names = ("take.wav", "quiet.wav", "bad.wav")
+    for n in names:
+        (root / "raw" / n).write_bytes(b"RIFF-fake")
+    monkeypatch.setattr(prepare, "sources",
+                        lambda project: [{"name": n} for n in names])
+
+    stub_split = prepare.split_audio
+
+    def fake_split(src, out_dir, stem=None, **kwargs):
+        if "quiet" in src.name:  # split sees the converted quiet-48k.wav
+            return []  # clear audio, but under the threshold cliff
+        return stub_split(src, out_dir, stem=stem or src.stem, **kwargs)
+
+    stub_convert = prepare.convert_one
+
+    def fake_convert(src, dst, channel=None):
+        if src.name == "bad.wav":
+            raise RuntimeError("corrupt input")
+        return stub_convert(src, dst, channel=channel)
+
+    monkeypatch.setattr(prepare, "split_audio", fake_split)
+    monkeypatch.setattr(prepare, "convert_one", fake_convert)
+
+    result = runner.execute(jd)
+
+    rows = {r["source"]: r for r in result["per_source"]}
+    assert set(rows) == set(names)
+    assert rows["take.wav"]["clips"] == 5
+    assert rows["take.wav"]["error"] is None
+    assert rows["take.wav"]["seconds"] == pytest.approx(25.0)
+    # quiet.wav still gets a measured level: the UI can say WHY it was empty
+    assert rows["quiet.wav"]["clips"] == 0
+    # the stub's tone: RMS of a sine is peak/sqrt(2)
+    assert rows["quiet.wav"]["level"]["speech_dbfs"] == pytest.approx(
+        20 * math.log10(1000 / math.sqrt(2) / 32768), abs=0.5)
+    assert rows["bad.wav"]["error"] == "corrupt input"
+    assert result["clip_count"] == 5
+    assert result["zeros"] == ["bad.wav", "quiet.wav"]
+    assert result["audio"] == []
+    # counts only, no playable clips: the scratch tree is gone
+    assert not (root / "work" / "preview" / "segment-all" / jd.name
+                / "_work").exists()
+    on_disk = json.loads(
+        (root / "work" / "preview" / "segment-all" / jd.name
+         / "preview.json").read_text())
+    assert on_disk["params"] == {"energy_threshold": 40}
+
+
+def test_segment_all_preview_without_sources_fails(tmp_path, monkeypatch):
+    jd, _root = make_job(tmp_path, {"stage": "segment-all"})
+    monkeypatch.setattr(prepare, "sources", lambda project: [])
+    with pytest.raises(RuntimeError, match="no sources in raw/"):
+        runner.execute(jd)
+
+
 # ------------------------------------------------------------------ denoise
 
 def test_denoise_preview_outputs_both_sides(tmp_path, segment_stubs):

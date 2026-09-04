@@ -156,6 +156,14 @@ export interface PreviewRow {
     seconds?: number;
     clips?: Region[];
     level?: { peak_dbfs: number; rms_dbfs: number; speech_dbfs: number };
+    per_source?: {
+      source: string;
+      clips: number;
+      seconds: number;
+      level: { peak_dbfs: number; rms_dbfs: number; speech_dbfs: number } | null;
+      error: string | null;
+    }[];
+    zeros?: string[];
   };
   created_at?: string;
 }

@@ -112,16 +112,21 @@ export function PreparePage({ name }: { name: string }) {
     return { source, channel, denoise: denoiseFirst, ...dials };
   }
 
-  async function preview(stage: "segment" | "denoise"): Promise<void> {
+  async function preview(stage: "segment" | "segment-all" | "denoise"): Promise<void> {
     setError("");
     setMessage("");
     const params =
       stage === "segment"
         ? tunerParams()
-        : { source, channel, seconds: 25 };
+        : stage === "segment-all"
+          ? { channel, denoise: denoiseFirst, ...dials }
+          : { source, channel, seconds: 25 };
     try {
       await post(`/projects/${name}/preview`, { stage, params });
-      setMessage(`${stage} preview queued…`);
+      setMessage(
+        stage === "segment-all"
+          ? "batch preview queued: every source through the current dials…"
+          : `${stage} preview queued…`);
     } catch (ex) {
       setError(String(ex));
     }
@@ -190,7 +195,8 @@ export function PreparePage({ name }: { name: string }) {
     <>
       <h1>Prepare tuner — {name}</h1>
       <p className="muted">
-        adjust the VAD dials, preview against one source, promote the winner{" "}
+        adjust the VAD dials, preview one source or all of them, promote the
+        winner{" "}
         <a href={`#/project/${name}`}>back to project</a>
       </p>
       {error && <p className="error">{error}</p>}
@@ -277,6 +283,13 @@ export function PreparePage({ name }: { name: string }) {
       <div className="row">
         <button disabled={!hasSources} onClick={() => void preview("segment")}>
           preview segment
+        </button>
+        <button
+          disabled={!hasSources}
+          title="run the current dials against every source and report per-source clip counts"
+          onClick={() => void preview("segment-all")}
+        >
+          apply to all (preview)
         </button>
         <button disabled={!hasSources} onClick={() => void preview("denoise")}>
           preview denoise A/B
@@ -378,7 +391,8 @@ function useSweepPoll(
         if (e instanceof ApiError && e.status === 404) onGone();
         return [[], []] as [PreviewRow[], Job[]];
       });
-      const seg = previews.filter((r) => r.stage === "segment");
+      const seg = previews.filter(
+        (r) => r.stage === "segment" || r.stage === "segment-all");
       const dn = previews.filter((r) => r.stage === "denoise");
       const fp = seg.map((r) => r.id).join() + "|" + dn.map((r) => r.id).join();
       if (fp !== sweepFp.current) {
@@ -414,10 +428,13 @@ function SelectedClips({
   onApplyThreshold: (v: number) => void;
 }) {
   const audio = row.result.audio ?? [];
+  const batch = row.result.per_source;
   const head =
     row.stage === "denoise"
       ? `denoise A/B from ${row.id} (original vs denoised, ${row.result.seconds ?? "?"}s)`
-      : `clips from ${row.id} (${row.result.clip_count ?? "?"} total, first ${audio.length} playable)`;
+      : batch
+        ? `all sources from ${row.id} (${row.result.clip_count ?? "?"} clips across ${batch.length} sources)`
+        : `clips from ${row.id} (${row.result.clip_count ?? "?"} total, first ${audio.length} playable)`;
   // auditok's energy_threshold is 20*log10 of int16-scaled RMS, so a
   // threshold of 55 rejects every window quieter than -35.3 dBFS. A clear
   // but quietly recorded source never clears that bar: say so with the
@@ -456,22 +473,73 @@ function SelectedClips({
         </p>
       )
     ) : null;
+  // Batch rows: the quietest zero-clip source drives the suggestion, since
+  // one dial set has to clear every file — aim under the hardest case.
+  const zeroLevels = (batch ?? []).flatMap((r) =>
+    r.clips === 0 && r.level ? [r.level.speech_dbfs] : []);
+  const batchSuggested =
+    zeroLevels.length === 0
+      ? null
+      : Math.max(20, Math.floor(Math.min(...zeroLevels) + 90.3) - 6);
   return (
     <>
       <h3>{head}</h3>
-      {empty ?? (
-        <div className="grid">
-          {audio.map((f) => (
-            <div className="cell" key={f}>
-              {f}
-              <audio
-                controls
-                src={fileUrl(project, row.dir, f)}
-                style={{ width: "100%" }}
-              />
-            </div>
-          ))}
-        </div>
+      {batch ? (
+        <>
+          <table>
+            <thead>
+              <tr>
+                <th>source</th>
+                <th>clips</th>
+                <th>seconds</th>
+                <th>speech dBFS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {batch.map((r) => (
+                <tr key={r.source}>
+                  <td>{r.source}</td>
+                  <td className={r.clips === 0 ? "error" : undefined}>
+                    {r.error ?? (r.clips === 0 ? "0" : r.clips)}
+                  </td>
+                  <td>{r.error ? "—" : r.seconds}</td>
+                  <td>{r.level ? r.level.speech_dbfs : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {(row.result.zeros?.length ?? 0) > 0 && (
+            <p className="notice">
+              {row.result.zeros!.length} of {batch.length} sources yield
+              nothing at these settings; a full prepare would lose them.{" "}
+              {batchSuggested !== null && batchSuggested !== energy && (
+                <>
+                  <button onClick={() => onApplyThreshold(batchSuggested)}>
+                    set energy threshold to {batchSuggested}
+                  </button>{" "}
+                  and apply to all again.{" "}
+                </>
+              )}
+              Levels differ per file: spot-check outliers with a
+              single-source preview before promoting.
+            </p>
+          )}
+        </>
+      ) : (
+        empty ?? (
+          <div className="grid">
+            {audio.map((f) => (
+              <div className="cell" key={f}>
+                {f}
+                <audio
+                  controls
+                  src={fileUrl(project, row.dir, f)}
+                  style={{ width: "100%" }}
+                />
+              </div>
+            ))}
+          </div>
+        )
       )}
     </>
   );
@@ -499,7 +567,7 @@ function SweepTable(props: {
         {props.rows.map((row) => {
           const p = (row.params ?? {}) as Record<string, unknown>;
           const sum =
-            `${String(p.source ?? "?")} · ${String(p.channel ?? "downmix")}` +
+            `${String(p.source ?? "all sources")} · ${String(p.channel ?? "downmix")}` +
             (isSeg
               ? ` · energy ${String(p.energy_threshold)} · dn ${String(p.denoise !== false)}`
               : ` · ${String(p.seconds)}s`);
