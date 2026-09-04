@@ -82,6 +82,12 @@ def transcribe(project: Project, model_size: str | None = None,
 
     rows, audit, transcribed, skipped, total_seconds = [], [], 0, 0, 0.0
     nml_engine = textnorm.engine()  # None when inflect is absent
+    if normalize and nml_engine is None and todo:
+        # Silent fallback burned a whole debugging session once: digits
+        # stayed in every fresh transcript and nothing said why.
+        print("WARNING: inflect is not installed — numbers stay as digits "
+              "in fresh transcripts. Install the runtime extra: "
+              "pip install 'piper-trainer[runtime]'", flush=True)
     n_abbr = n_num = 0
     for i, wav in enumerate(wavs):
         dur = duration(wav)
@@ -128,4 +134,8 @@ def transcribe(project: Project, model_size: str | None = None,
     return {"clips": len(rows), "transcribed": transcribed, "skipped": skipped,
             "malformed_preserved": len(preserve),
             "total_seconds": total_seconds,
-            "normalized": {"abbreviations": n_abbr, "numbers": n_num}}
+            "normalized": {"abbreviations": n_abbr, "numbers": n_num,
+                           # None = the numbers pass silently skipped
+                           # (inflect missing) — the UI surfaces this.
+                           "engine": "inflect" if nml_engine is not None
+                           else None}}

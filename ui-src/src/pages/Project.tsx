@@ -554,8 +554,24 @@ function LogStrip(props: { sum: LogSummary; job: Job | null }) {
       ) : sum.result !== null ? (
         <span className="ok">{resultText(sum.result)}</span>
       ) : null}
+      {job.state === "succeeded" && normalizationSkipped(job.result) && (
+        <span className="error">
+          numbers left as digits — inflect is not installed (pip install
+          'piper-trainer[runtime]')
+        </span>
+      )}
     </div>
   );
+}
+
+// Transcribe jobs report which engine normalized fresh transcripts;
+// engine === null means the numbers pass was skipped (inflect missing).
+// Older jobs lack the key entirely and must not warn.
+function normalizationSkipped(result: Record<string, unknown> | null): boolean {
+  const r = result as
+    | { stats?: { normalized?: { engine?: string | null } } }
+    | null;
+  return r?.stats?.normalized?.engine === null;
 }
 
 function JobsTable(props: {

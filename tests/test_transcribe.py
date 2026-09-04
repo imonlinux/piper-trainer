@@ -121,6 +121,33 @@ def test_on_progress_fires_for_every_clip(tmp_path, fake_whisper):
         (1, 4, "a.wav"), (2, 4, "b.wav"), (3, 4, "c.wav"), (4, 4, "d.wav")]
 
 
+def test_missing_inflect_is_loud_not_silent(tmp_path, fake_whisper,
+                                            monkeypatch, capsys):
+    """When inflect is absent the numbers pass falls back to digits — that
+    fallback used to be invisible and cost a debugging session. The stats
+    must flag it (engine: None) and the log must carry a WARNING line."""
+    from piper_trainer import textnorm
+
+    real_engine = textnorm.engine()
+    monkeypatch.setattr(textnorm, "engine", lambda: None)
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    write_tone(proj.wavs / "a.wav")
+    write_tone(proj.wavs / "b.wav")
+
+    stats = transcribe.transcribe(proj)
+
+    assert stats["normalized"]["engine"] is None
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "inflect" in out
+
+    # With the engine present the key reports it and no warning prints.
+    monkeypatch.setattr(textnorm, "engine", lambda: real_engine)
+    stats = transcribe.transcribe(proj, retranscribe=True)
+    assert stats["normalized"]["engine"] == "inflect"
+    assert "WARNING" not in capsys.readouterr().out
+
+
 def test_malformed_lines_survive_only_missing_rewrite(tmp_path, fake_whisper):
     """A hand-edited malformed row must survive a --only-missing run that
     rewrites metadata.csv — appended at the end, counted in the result."""
