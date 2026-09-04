@@ -35,6 +35,7 @@ export function ProjectPage({ name }: { name: string }) {
   const [sourceMsg, setSourceMsg] = useState("");
   const [actionError, setActionError] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const [retranscribe, setRetranscribe] = useState(false);
   // Ingest source type (§2.5): upload is staged by the API; url,
   // media-site and hf-dataset are acquired by the runner itself.
   const [ingestMode, setIngestMode] = useState<
@@ -470,7 +471,21 @@ export function ProjectPage({ name }: { name: string }) {
       </p>
       <div className="row">
         <button onClick={() => void runJob("prepare")}>run prepare</button>
-        <button onClick={() => void runJob("transcribe")}>run transcribe</button>
+        <label className="muted">
+          <input
+            type="checkbox"
+            checked={retranscribe}
+            onChange={(e) => setRetranscribe(e.target.checked)}
+          />{" "}
+          retranscribe existing
+        </label>
+        <button
+          onClick={() =>
+            void runJob("transcribe", retranscribe ? { retranscribe: true } : {})
+          }
+        >
+          run transcribe
+        </button>
         <button onClick={() => void runJob("export")}>run export</button>
       </div>
       {p.prepare_params && Object.keys(p.prepare_params).length > 0 && (
