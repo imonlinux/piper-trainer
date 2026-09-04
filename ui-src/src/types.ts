@@ -205,3 +205,18 @@ export interface TrainPreview {
   projected_seconds: number | null;
   basis: string | null;
 }
+
+// GET /api/projects/{name}/voices (§6.5): one exported voice in out/.
+// `problems` mirrors export.verify — empty means the name agreement
+// (.onnx stem == config dataset field) and config shape are intact.
+export interface VoiceInfo {
+  stem: string;
+  size_bytes: number;
+  mtime: string;
+  checkpoint_epoch: number | null;
+  quality: string | null;
+  language: string | null;
+  espeak_voice: string | null;
+  inference: Record<string, number>;
+  problems: string[];
+}

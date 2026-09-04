@@ -468,6 +468,8 @@ export function ProjectPage({ name }: { name: string }) {
         <a href={`#/audit/${name}`}>audit dataset (transcripts, validation, clean)</a>
         {" · "}
         <a href={`#/train/${name}`}>train screen (warmstart, resume, projection)</a>
+        {" · "}
+        <a href={`#/voices/${name}`}>voices screen (export, tune, say)</a>
       </p>
       <div className="row">
         <button onClick={() => void runJob("prepare")}>run prepare</button>

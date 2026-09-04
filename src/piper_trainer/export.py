@@ -13,6 +13,7 @@ VoiceNotFoundError on use.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +65,11 @@ def export(project: Project, tier: str, checkpoint: Path,
 
     # phoneme_id_map / num_symbols / num_speakers describe the trained
     # embedding table and are never touched.
+    # Provenance: which epoch produced this voice (Lightning names
+    # checkpoints epoch=N-step=M; parsed from the name so export never
+    # needs torch).
+    m = re.search(r"epoch=(\d+)", checkpoint.name)
+    cfg["checkpoint_epoch"] = int(m.group(1)) if m else None
     json_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
     return onnx_path, json_path
 

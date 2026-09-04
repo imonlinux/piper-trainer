@@ -44,6 +44,25 @@ export function post<T>(path: string, body: unknown): Promise<T> {
 export const postEmpty = <T,>(path: string): Promise<T> =>
   api<T>(path, { method: "POST" });
 
+// Binary endpoint (the §4.6 say preview): wav bytes, not JSON.
+export async function postWav(path: string, body: unknown): Promise<Blob> {
+  const res = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail || detail;
+    } catch {
+      // body was not JSON; statusText is the best we have
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return res.blob();
+}
+
 export const del = <T,>(path: string): Promise<T> =>
   api<T>(path, { method: "DELETE" });
 

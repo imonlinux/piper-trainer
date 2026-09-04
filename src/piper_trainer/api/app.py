@@ -19,13 +19,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import (FastAPI, File, HTTPException, UploadFile, WebSocket,
-                     WebSocketDisconnect)
+from fastapi import (FastAPI, File, HTTPException, Response, UploadFile,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from .. import doctor, peaks, prepare
+from .. import doctor, export as export_mod, peaks, prepare, say as say_mod
 from ..config import Project, TIERS
 from ..lock import LockBusy
 from . import catalog, dataset as dataset_mod, settings
@@ -59,6 +59,16 @@ class PreviewCreate(BaseModel):
 
 class TranscriptEdit(BaseModel):
     text: str
+
+
+class VoiceParams(BaseModel):
+    length_scale: float | None = Field(default=None, ge=0.1, le=3.0)
+    noise_scale: float | None = Field(default=None, ge=0.0, le=2.0)
+    noise_w: float | None = Field(default=None, ge=0.0, le=2.0)
+
+
+class SayRequest(VoiceParams):
+    text: str = Field(min_length=1, max_length=say_mod.MAX_TEXT)
 
 
 class SourceDelete(BaseModel):
@@ -547,6 +557,96 @@ def create_app(workspace: Path | None = None,
                 out["basis"] = (f"measured: {r['steps_planned']} steps at "
                                 f"{sps:g} it/s (train preview)")
         return out
+
+    # ------------------------------------------------------------- voices
+    # §4.6/§6.5: exported voices in out/. The .onnx stem, the config's
+    # dataset field, and the stem the client addressed must agree —
+    # export.verify enforces it at export time, and these endpoints refuse
+    # to serve a voice that fails it (a mismatched voice either never
+    # appears where it should or throws VoiceNotFoundError later).
+
+    def voice_or_404(proj: Project, stem: str) -> tuple[Path, Path]:
+        if not NAME_RE.match(stem):
+            raise HTTPException(400, "bad voice name")
+        onnx = proj.out / f"{stem}.onnx"
+        json_path = proj.out / f"{stem}.onnx.json"
+        if not (onnx.exists() and json_path.exists()):
+            raise HTTPException(404, f"no exported voice {stem!r} in out/")
+        return onnx, json_path
+
+    def voice_summary(proj: Project, stem: str) -> dict:
+        onnx, json_path = voice_or_404(proj, stem)
+        cfg = json.loads(json_path.read_text())
+        return {
+            "stem": stem,
+            "size_bytes": onnx.stat().st_size,
+            "mtime": datetime.fromtimestamp(
+                onnx.stat().st_mtime, tz=timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"),
+            "checkpoint_epoch": cfg.get("checkpoint_epoch"),
+            "quality": cfg.get("audio", {}).get("quality"),
+            "language": cfg.get("language", {}).get("code"),
+            "espeak_voice": cfg.get("espeak", {}).get("voice"),
+            "inference": cfg.get("inference", {}),
+            "problems": export_mod.verify(onnx, json_path),
+        }
+
+    @app.get("/api/projects/{project_id}/voices")
+    def list_voices(project_id: str):
+        proj = project_or_404(project_id)
+        stems = sorted(p.stem for p in proj.out.glob("*.onnx")
+                       if (proj.out / f"{p.stem}.onnx.json").exists())
+        return [voice_summary(proj, s) for s in stems]
+
+    @app.get("/api/projects/{project_id}/voices/{stem}")
+    def get_voice(project_id: str, stem: str):
+        return voice_summary(project_or_404(project_id), stem)
+
+    @app.patch("/api/projects/{project_id}/voices/{stem}")
+    def patch_voice(project_id: str, stem: str, body: VoiceParams):
+        """Persist inference tuning into the .onnx.json (the sliders on the
+        Voices screen). Only the inference block is touched; everything the
+        name-agreement check depends on stays as exported."""
+        proj = project_or_404(project_id)
+        _, json_path = voice_or_404(proj, stem)
+        cfg = json.loads(json_path.read_text())
+        inf = cfg.setdefault("inference", {})
+        updates = body.model_dump(exclude_none=True)
+        if not updates:
+            raise HTTPException(400, "no parameters to update")
+        inf.update(updates)
+        json_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+        return voice_summary(proj, stem)
+
+    @app.post("/api/projects/{project_id}/voices/{stem}/say")
+    def say_voice(project_id: str, stem: str, body: SayRequest):
+        proj = project_or_404(project_id)
+        onnx, json_path = voice_or_404(proj, stem)
+        try:
+            wav = say_mod.synthesize(
+                onnx, json_path, body.text,
+                length_scale=body.length_scale,
+                noise_scale=body.noise_scale,
+                noise_w=body.noise_w)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except say_mod.SayError as e:
+            raise HTTPException(502, str(e))
+        return Response(content=wav, media_type="audio/wav",
+                        headers={"Content-Disposition":
+                                 f'inline; filename="{stem}-say.wav"'})
+
+    @app.get("/api/projects/{project_id}/voices/{stem}/download")
+    def download_voice(project_id: str, stem: str, file: str = "onnx"):
+        proj = project_or_404(project_id)
+        onnx, json_path = voice_or_404(proj, stem)
+        if file == "onnx":
+            return FileResponse(onnx, filename=onnx.name,
+                                media_type="application/octet-stream")
+        if file == "json":
+            return FileResponse(json_path, filename=json_path.name,
+                                media_type="application/json")
+        raise HTTPException(400, "file must be 'onnx' or 'json'")
 
     # ------------------------------------------------------------- previews
     # §2/§4.5: a preview is a job variant — same lifecycle, same log

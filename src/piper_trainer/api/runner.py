@@ -280,8 +280,13 @@ def _export(project: Project, params: dict, emit) -> dict:
     if not ckpt:
         raise RuntimeError(
             f"no {tier} checkpoint found to export — run a train job first")
+    # Same convention as _train's warmstart: absolute (catalog fetch) or
+    # project-relative (the /checkpoints listing) both resolve.
+    ckpt_path = Path(ckpt)
+    if not ckpt_path.is_absolute():
+        ckpt_path = project.root / ckpt_path
     onnx_path, json_path = export_mod.export(
-        project, tier, Path(ckpt),
+        project, tier, ckpt_path,
         voice_name=params.get("voice_name"),
         espeak_voice=_espeak_voice(project, params),
         length_scale=params.get("length_scale"),
