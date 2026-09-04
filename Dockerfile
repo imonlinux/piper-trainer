@@ -160,9 +160,13 @@ RUN python3 -m pip install \
 RUN python3 -m pip install -e '.[train]' --no-build-isolation --no-deps
 
 # ----------------------------------------------------- pipeline dependencies
+# inflect: spoken-form number expansion during transcribe (textnorm). Its
+# absence does not fail anything — the fallback keeps digits — so it must
+# ship here or fresh transcripts silently come out with "9000" unread.
 RUN python3 -m pip install \
         "auditok>=0.3" \
         faster-whisper \
+        "inflect>=7" \
         soundfile \
         numpy
 
