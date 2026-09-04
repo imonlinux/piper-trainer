@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, get, getText, jobLogUrl, post, postEmpty } from "../api";
+import { ApiError, get, getText, post, postEmpty } from "../api";
 import { lossHistory, percentDone, summarize, summaryText } from "../joblog";
 import type { LossPoint } from "../joblog";
 import { progressText, useJobStream } from "../hooks";
@@ -65,9 +65,17 @@ export function TrainPage({ name }: { name: string }) {
   const [runId, setRunId] = useState<string | null>(null);
   const [fullLog, setFullLog] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const logPre = useRef<HTMLPreElement>(null);
 
   const { lines, job, logHref } = useJobStream(runId);
   const sum = useMemo(() => summarize(lines, job), [lines, job]);
+
+  // Keep the raw log pinned to the bottom as lines land (same contract
+  // as the Project page's stream — this page is now a watch surface too).
+  useEffect(() => {
+    const pre = logPre.current;
+    if (pre) pre.scrollTop = pre.scrollHeight;
+  }, [lines]);
 
   // ------------------------------------------------------------- loading
   useEffect(() => {
@@ -115,9 +123,9 @@ export function TrainPage({ name }: { name: string }) {
   // lines; a 4000-epoch run blows past that within hours).
   useEffect(() => {
     setFullLog("");
-    if (!logHref) return;
+    if (!runId) return;
     let alive = true;
-    getText(jobLogUrl(runId ?? ""))
+    getText(`/jobs/${runId}/log`)
       .then((t) => {
         if (alive) setFullLog(t);
       })
@@ -125,7 +133,6 @@ export function TrainPage({ name }: { name: string }) {
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 
   // Elapsed clock ticks only while something is running.
@@ -176,6 +183,13 @@ export function TrainPage({ name }: { name: string }) {
 
   const loss = useMemo(
     () => lossHistory([...fullLog.split("\n"), ...lines]),
+    [fullLog, lines],
+  );
+  // Placeholder honesty: "no epochs yet" and "epochs but no loss values
+  // in their lines" are different situations and say different things.
+  const anyEpoch = useMemo(
+    () =>
+      [...fullLog.split("\n"), ...lines].some((l) => /\bEpoch \d+:/.test(l)),
     [fullLog, lines],
   );
 
@@ -406,7 +420,14 @@ export function TrainPage({ name }: { name: string }) {
             )}
             {job.error && <span className="error">{job.error}</span>}
           </div>
-          <LossCanvas points={loss} />
+          <LossCanvas
+            points={loss}
+            note={
+              anyEpoch
+                ? "epochs seen, but their log lines carry no loss values yet"
+                : undefined
+            }
+          />
           <p className="muted">
             {loss.length} epochs parsed
             {logHref && (
@@ -416,6 +437,9 @@ export function TrainPage({ name }: { name: string }) {
               </>
             )}
           </p>
+          <pre className="log" ref={logPre}>
+            {lines.join("\n")}
+          </pre>
         </>
       )}
     </>
@@ -425,7 +449,13 @@ export function TrainPage({ name }: { name: string }) {
 // The loss curve (§6.4): training_loss per epoch solid, validation_loss
 // dashed when the run emitted it. Canvas, no chart dependency — the
 // points arrive as plain log lines and the redraw is a plain effect.
-function LossCanvas({ points }: { points: LossPoint[] }) {
+function LossCanvas({
+  points,
+  note,
+}: {
+  points: LossPoint[];
+  note?: string;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const cv = ref.current;
@@ -442,7 +472,7 @@ function LossCanvas({ points }: { points: LossPoint[] }) {
     if (points.length < 2) {
       ctx.fillStyle = "#777";
       ctx.font = "12px sans-serif";
-      ctx.fillText("waiting for epochs with loss values…", 12, 24);
+      ctx.fillText(note ?? "waiting for the first epochs…", 12, 24);
       return;
     }
     const padL = 52;
