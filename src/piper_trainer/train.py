@@ -53,6 +53,22 @@ def checkpoint_epoch(ckpt: Path) -> int | None:
     return int(epoch) if epoch is not None else None
 
 
+def checkpoint_global_step(ckpt: Path) -> int | None:
+    """Global optimizer step count from a Lightning checkpoint, or None.
+
+    The train preview needs it because --trainer.max_steps is a global
+    counter too: a resume must preview steps ckpt_global+1..+N, not 1..N,
+    or Lightning sees the ceiling already met and exits immediately."""
+    import torch
+
+    try:
+        data = torch.load(str(ckpt), map_location="cpu", weights_only=False)
+    except Exception:  # noqa: BLE001
+        return None
+    gs = data.get("global_step") if isinstance(data, dict) else None
+    return int(gs) if gs is not None else None
+
+
 def build_command(
     project: Project,
     tier: str = "medium",
@@ -67,11 +83,15 @@ def build_command(
     accelerator: str = "gpu",
     check_val_every_n_epoch: int = 25,
     voice_name: str | None = None,
+    runs_dir: Path | None = None,
 ) -> list[str]:
     if tier not in TIERS:
         raise ValueError(f"unknown tier {tier!r}")
     spec = TIERS[tier]
     name = voice_name or voice_stem(project.name, tier, espeak_voice)
+    # The train preview redirects Lightning's output tree into
+    # work/preview/train/<id>/ (§2.1); full runs keep project.runs(tier).
+    rd = runs_dir or project.runs(tier)
 
     cmd = [
         sys.executable, "-m", "piper.train", "fit",
@@ -96,14 +116,13 @@ def build_command(
         "--trainer.max_epochs", str(max_epochs),
         "--trainer.check_val_every_n_epoch", str(check_val_every_n_epoch),
         # without this, lightning_logs/ lands in the launch directory
-        "--trainer.default_root_dir", str(project.runs(tier)),
+        "--trainer.default_root_dir", str(rd),
         # CSV logger instead of the TensorBoard default: metrics.csv is
         # the live loss curve's data source (§6.4 — the progress bar
         # carries no loss values). Same save_dir/name/version tree as the
         # default, so checkpoint discovery is untouched.
         "--trainer.logger", "CSVLogger",
-        "--trainer.logger.dict_kwargs", json.dumps(
-            {"save_dir": str(project.runs(tier))}),
+        "--trainer.logger.dict_kwargs", json.dumps({"save_dir": str(rd)}),
     ]
 
     for key, value in spec["model_args"].items():

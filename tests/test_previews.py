@@ -232,3 +232,138 @@ def test_preview_unknown_source(tmp_path):
     jd, _ = make_job(tmp_path, {"stage": "segment", "source": "../escape"})
     with pytest.raises(RuntimeError, match="not found in raw/"):
         runner.execute(jd)
+
+
+# -------------------------------------------------------------------- train
+
+@pytest.fixture
+def quiet_sleep(monkeypatch):
+    # the rate parser retries the manager's log tee for up to a second;
+    # tests do not need to actually wait those out
+    monkeypatch.setattr(runner.time, "sleep", lambda _s: None)
+
+
+def add_rows(root, n=8):
+    root.joinpath("dataset").mkdir(exist_ok=True)
+    root.joinpath("dataset", "metadata.csv").write_text(
+        "".join(f"clip_{i:03d}| spoken row {i}\n" for i in range(n)))
+
+
+@pytest.fixture
+def train_stubs(monkeypatch):
+    """No torch, no lightning, no validate here: capture the command a
+    real run would get and always succeed."""
+    commands: list[list[str]] = []
+    monkeypatch.setattr(runner, "validate_dataset", lambda *a, **k: [])
+    monkeypatch.setattr(runner.train_mod, "run",
+                        lambda cmd: commands.append(cmd) or 0)
+    return commands
+
+
+def test_train_preview_runs_capped_isolated_command(
+        tmp_path, train_stubs, quiet_sleep):
+    jd, root = make_job(tmp_path, {
+        "stage": "train", "warmstart": "fake.ckpt",
+        "max_epochs": 100, "batch_size": 4, "steps": 50})
+    (root / "fake.ckpt").write_bytes(b"ckpt")
+    add_rows(root)
+    # the manager tees the trainer's progress bar into the job log; a
+    # pre-written bar stands in for it, so the preview reads its rate the
+    # way it does in production
+    (jd / "log.txt").write_text(
+        "Epoch 0:  40%|████| 20/50 [00:09<00:14, 1.40it/s]\n"
+        "Epoch 0: 100%|████| 50/50 [00:23<00:00, 2.17it/s]\n")
+    result = runner.execute(jd)
+
+    cmd = train_stubs[0]
+    # capped at --trainer.max_steps; the ceiling stays the resolved target
+    i = cmd.index("--trainer.max_steps")
+    assert cmd[i + 1] == "50"
+    # every output Lightning writes lands in the preview dir (§2.1)
+    j = cmd.index("--trainer.default_root_dir")
+    assert cmd[j + 1] == str(root / "work" / "preview" / "train" / jd.name)
+    k = cmd.index("--trainer.logger.dict_kwargs")
+    assert str(root / "work" / "preview" / "train" / jd.name) in cmd[k + 1]
+    assert cmd[cmd.index("--model.warmstart_ckpt") + 1] \
+        == str(root / "fake.ckpt")
+
+    assert result["mode"] == "warmstart"
+    assert result["steps_planned"] == 50
+    assert result["clips"] == 8
+    assert result["steps_per_epoch"] == 2
+    # rate from the bar, so the projection is the steady-state one
+    assert result["rate_source"] == "progress-bar"
+    assert result["steps_per_sec"] == 2.17
+    assert result["target_epochs"] == 100
+    assert result["remaining_epochs"] == 100
+    assert result["projected_seconds"] == round(100 * 2 / 2.17)
+    assert "note" not in result
+
+    # §2.1: nothing leaked into the real tree or project.json
+    assert not (root / "runs-medium").exists()
+    assert "target_epochs" not in json.loads(
+        (root / "project.json").read_text())
+
+
+def test_train_preview_resume_adds_global_steps(
+        tmp_path, monkeypatch, quiet_sleep):
+    jd, root = make_job(tmp_path, {
+        "stage": "train", "resume": "auto", "add_epochs": 50, "steps": 20,
+        "batch_size": 4, "skip_validate": True})
+    ck = (root / "runs-medium" / "lightning_logs" / "version_0"
+          / "checkpoints" / "last.ckpt")
+    ck.parent.mkdir(parents=True)
+    ck.write_bytes(b"ckpt")
+    add_rows(root)
+
+    import time
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(runner.train_mod, "latest_checkpoint",
+                        lambda project, tier: ck)
+    monkeypatch.setattr(runner.train_mod, "checkpoint_epoch",
+                        lambda path: 100)
+    monkeypatch.setattr(runner.train_mod, "checkpoint_global_step",
+                        lambda path: 3100)
+
+    def slow_run(cmd):
+        # burn real wall clock so the no-bar fallback measures a sane rate
+        commands.append(cmd)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 0.4:
+            pass
+        return 0
+
+    monkeypatch.setattr(runner.train_mod, "run", slow_run)
+
+    result = runner.execute(jd)
+    # max_steps is a global counter: 3100 consumed + 20 preview steps
+    i = commands[0].index("--trainer.max_steps")
+    assert commands[0][i + 1] == "3120"
+    assert result["mode"] == "resume"
+    assert result["target_epochs"] == 150
+    assert result["remaining_epochs"] == 50  # 150 ceiling - 100 at checkpoint
+    # empty log -> wall-clock rate, and the result says so honestly
+    assert result["rate_source"] == "wall-clock"
+    assert 0 < result["steps_per_sec"] < 1000
+    assert result["projected_seconds"] > 0
+    assert "upper bound" in result["note"]
+
+
+def test_train_preview_exit_code_raises(tmp_path, monkeypatch, quiet_sleep):
+    jd, root = make_job(tmp_path, {"stage": "train", "max_epochs": 10,
+                                   "batch_size": 4, "skip_validate": True})
+    add_rows(root)
+    monkeypatch.setattr(runner.train_mod, "run", lambda cmd: 1)
+    with pytest.raises(RuntimeError,
+                       match="the full run would have failed the same way"):
+        runner.execute(jd)
+
+
+def test_step_rate_parses_last_bar_frame(tmp_path):
+    log = tmp_path / "log.txt"
+    log.write_text(
+        "Epoch 0:  40%|████| 20/50 [00:09<00:14, 1.40it/s]\n"
+        "Epoch 0: 100%|████| 50/50 [00:23<00:00, 2.17it/s]\n")
+    assert runner._step_rate_from_log(log) == 2.17
+    assert runner._step_rate_from_log(tmp_path / "missing.txt") is None

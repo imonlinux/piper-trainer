@@ -63,12 +63,21 @@ export function TrainPage({ name }: { name: string }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
+  const [measureId, setMeasureId] = useState<string | null>(null);
+  const [measuredAt, setMeasuredAt] = useState(0);
   const [fullLog, setFullLog] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const logPre = useRef<HTMLPreElement>(null);
 
   const { lines, job, logHref } = useJobStream(runId);
   const sum = useMemo(() => summarize(lines, job), [lines, job]);
+  // The §2.2 train preview: a short real run whose measured step rate
+  // becomes the projection's basis. Its log stays in the preview job;
+  // this page only mirrors the outcome into the projection table.
+  const mstream = useJobStream(measureId);
+  const measuring =
+    mstream.job !== null &&
+    (mstream.job.state === "running" || mstream.job.state === "queued");
 
   // Keep the raw log pinned to the bottom as lines land (same contract
   // as the Project page's stream — this page is now a watch surface too).
@@ -148,6 +157,7 @@ export function TrainPage({ name }: { name: string }) {
   }, [job]);
 
   // Preview projection, debounced; invalid dials simply clear it.
+  // measuredAt rides in the deps so a finished measurement refetches it.
   useEffect(() => {
     const n = parseInt(epochs, 10);
     const b = parseInt(batch, 10);
@@ -171,7 +181,11 @@ export function TrainPage({ name }: { name: string }) {
       alive = false;
       clearTimeout(t);
     };
-  }, [name, epochs, batch]);
+  }, [name, epochs, batch, measuredAt]);
+
+  useEffect(() => {
+    if (mstream.job?.state === "succeeded") setMeasuredAt(Date.now());
+  }, [mstream.job?.state]);
 
   // ------------------------------------------------------------ derived
   const runCkpts = ckpts.filter((c) => c.source === "run");
@@ -240,6 +254,30 @@ export function TrainPage({ name }: { name: string }) {
     if (!runId) return;
     try {
       await postEmpty(`/jobs/${runId}/cancel`);
+    } catch (ex) {
+      setError(String(ex));
+    }
+  }
+
+  // The measured projection basis (§2.2): same mode/dials the real run
+  // would use, but Lightning is capped at ~50 steps. Failure here is the
+  // point — it is the full run's failure, caught for the cost of a minute.
+  async function measure(): Promise<void> {
+    setError("");
+    const params: Record<string, unknown> =
+      mode === "continue"
+        ? { add_epochs: n }
+        : mode === "warm"
+          ? { warmstart: warmPath, max_epochs: n }
+          : { max_epochs: n };
+    params.batch_size = b;
+    if (skip) params.skip_validate = true;
+    try {
+      const j = await post<Job>(`/projects/${name}/preview`, {
+        stage: "train",
+        params,
+      });
+      setMeasureId(j.id);
     } catch (ex) {
       setError(String(ex));
     }
@@ -376,12 +414,38 @@ export function TrainPage({ name }: { name: string }) {
           />
           skip validation
         </label>
-        <button disabled={!ready || running} onClick={() => void run()}>
+        <button
+          disabled={!ready || running || measuring}
+          onClick={() => void run()}
+        >
           {mode === "continue" ? `train ${n || "?"} more` : `train ${n || "?"} epochs`}
         </button>
       </div>
 
       <h2>Projection</h2>
+      <div className="row">
+        <button
+          disabled={!ready || running || measuring}
+          onClick={() => void measure()}
+        >
+          {measuring ? "measuring…" : "measure (~50 real steps)"}
+        </button>
+        <span className="muted">
+          runs a short training burst with these dials, then projects the
+          full run from the measured speed
+        </span>
+      </div>
+      {measuring && (
+        <p className="muted">
+          train preview running — its log is in the jobs list
+        </p>
+      )}
+      {mstream.job?.state === "failed" && (
+        <p className="error">
+          train preview failed: {mstream.job.error ?? "see its log"} — the
+          full run would have failed the same way
+        </p>
+      )}
       {preview === null ? (
         <p className="muted">enter valid dials to see the projection</p>
       ) : (

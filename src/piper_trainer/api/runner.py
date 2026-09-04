@@ -26,6 +26,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -612,6 +613,185 @@ def _preview_denoise(project: Project, params: dict, emit) -> dict:
                            "audio": ["original.wav", "denoised.wav"]})
 
 
+def _preview_espeak(project: Project, params: dict) -> str:
+    """Read-only twin of _espeak_voice: a preview must not write an
+    explicit override into project.json (§2.1)."""
+    return (params.get("espeak_voice") or project.get("espeak_voice")
+            or "en-us")
+
+
+_IT_PER_S = re.compile(r"(\d+(?:\.\d+)?)\s*it/s")
+
+
+def _step_rate_from_log(log_path: Path) -> float | None:
+    """The last `it/s` in Lightning's progress bar — the steady-state step
+    rate the trainer measured itself, excluding startup and preprocessing.
+    The manager tees runner stdout into log.txt through a pipe, so give
+    the drain a moment before concluding the bar isn't there."""
+    for _ in range(4):
+        if log_path.exists():
+            hits = _IT_PER_S.findall(log_path.read_text(errors="replace"))
+            if hits:
+                return float(hits[-1])
+        time.sleep(0.25)
+    return None
+
+
+def _human_seconds(sec: float) -> str:
+    s = int(sec)
+    if s < 90:
+        return f"~{s}s"
+    m, h = s // 60, s // 3600
+    if h == 0:
+        return f"~{m}m"
+    return f"~{h}h {m % 60:02d}m"
+
+
+def _preview_train(project: Project, params: dict, emit) -> dict:
+    """§2.2 train preview, the one the design doc calls highest-value: a
+    real ~N-step run (default 50) that answers "does it start, how fast,
+    and how long would the full run take" in under a minute. It builds the
+    exact command a full train builds — same validation gate, same
+    warmstart/resume resolution, same phonemization cache — then caps
+    Lightning with --trainer.max_steps and redirects every output it
+    writes into work/preview/train/<id>/ so runs-<tier>/ and project.json
+    stay untouched (§2.1). A failure here is the product: a broken
+    warmstart, an oversized batch or a mis-set espeak voice dies here
+    instead of three hours into a real run."""
+    tier = _tier(project, params)
+    espeak_voice = _preview_espeak(project, params)
+    batch_size = int(params.get("batch_size", 32))
+    validation_split = params.get("validation_split", 0.02)
+    steps = max(10, min(int(params.get("steps", 50)), 500))
+
+    if not params.get("skip_validate", False):
+        findings = validate_dataset(project, tier=tier,
+                                    batch_size=batch_size,
+                                    espeak_voice=espeak_voice,
+                                    validation_split=validation_split)
+        for f in findings:
+            print(f)
+        errors = [f for f in findings if f.level == "error"]
+        if errors:
+            raise RuntimeError(
+                "validation failed; fix the errors before training: "
+                + "; ".join(f"[{f.code}] {f.message}" for f in errors))
+
+    # Same warmstart/resume resolution as _train — the preview only means
+    # something if it exercises the mode the real run will use.
+    warmstart = None
+    if params.get("warmstart"):
+        warmstart = Path(params["warmstart"])
+        if not warmstart.is_absolute():
+            warmstart = project.root / warmstart
+        if not warmstart.is_file():
+            raise RuntimeError(f"warmstart checkpoint not found: {warmstart}")
+
+    resume = params.get("resume")
+    if resume is None and params.get("add_epochs") is not None:
+        resume = "auto"
+    if resume == "auto":
+        resume = train_mod.latest_checkpoint(project, tier)
+        if resume is None:
+            raise RuntimeError("--resume auto found no checkpoint")
+    elif resume is not None:
+        resume = Path(resume)
+        if not resume.exists():
+            raise RuntimeError(f"checkpoint not found: {resume}")
+
+    rows = len(metadata.read(project.metadata)[0]) \
+        if project.metadata.exists() else 0
+    if rows == 0:
+        raise RuntimeError("no dataset rows to train on — transcribe first")
+    steps_per_epoch = (rows + batch_size - 1) // batch_size
+
+    # max_steps is a global counter, so a resume must add its N on top of
+    # the steps the checkpoint already consumed (see checkpoint_global_step).
+    ckpt_epoch = None
+    global_step = 0
+    if resume is not None:
+        ckpt_epoch = train_mod.checkpoint_epoch(resume)
+        gs = train_mod.checkpoint_global_step(resume)
+        if gs is not None:
+            global_step = gs
+        elif ckpt_epoch:
+            global_step = ckpt_epoch * steps_per_epoch
+        print(f"preview resumes from {resume}"
+              + (f" (epoch {ckpt_epoch}, step {global_step})"
+                 if ckpt_epoch is not None else ""), flush=True)
+
+    max_epochs = train_mod.resolve_max_epochs(
+        ckpt_epoch, params.get("add_epochs"), params.get("max_epochs"))
+    if resume is not None:
+        train_mod.check_resume_ceiling(ckpt_epoch, max_epochs)
+    remaining_epochs = max_epochs - (ckpt_epoch or 0)
+
+    pdir = _preview_dir(project, params, "train")
+    cmd = train_mod.build_command(
+        project, tier=tier, espeak_voice=espeak_voice,
+        batch_size=batch_size, max_epochs=max_epochs,
+        num_workers=params.get("num_workers", 8),
+        validation_split=validation_split,
+        warmstart=warmstart,
+        resume=resume,
+        accelerator=params.get("accelerator", "gpu"),
+        precision=params.get("precision", "32-true"),
+        runs_dir=pdir)
+    cmd += ["--trainer.max_steps", str(global_step + steps)]
+
+    mode = ("resume" if resume is not None
+            else "warmstart" if warmstart is not None else "scratch")
+    emit("TARGET", {"total": steps, "unit": "step"})
+    print(f"train preview ({mode}): {steps} steps, batch {batch_size}, "
+          f"{rows} clips; all outputs -> {pdir}", flush=True)
+    t0 = time.monotonic()
+    code = train_mod.run(cmd)
+    elapsed = time.monotonic() - t0
+    if code != 0:
+        raise RuntimeError(
+            f"train preview exited with code {code} after {elapsed:.0f}s — "
+            "the full run would have failed the same way; the reason is in "
+            "the log above")
+
+    rate = _step_rate_from_log(params["_job_dir"] / "log.txt")
+    rate_source = "progress-bar"
+    if rate is None:
+        # no bar in the log: fall back to wall clock, which silently folds
+        # startup and first-run phonemization into the step rate
+        rate = steps / elapsed if elapsed > 0 else 0.0
+        rate_source = "wall-clock"
+    seconds_per_epoch = steps_per_epoch / rate if rate > 0 else None
+    projected = remaining_epochs * seconds_per_epoch \
+        if seconds_per_epoch else None
+
+    result: dict = {
+        "mode": mode,
+        "tier": tier,
+        "batch_size": batch_size,
+        "clips": rows,
+        "steps_planned": steps,
+        "steps_per_epoch": steps_per_epoch,
+        "elapsed_seconds": round(elapsed, 1),
+        "steps_per_sec": round(rate, 3) if rate > 0 else None,
+        "rate_source": rate_source,
+        "seconds_per_epoch": (round(seconds_per_epoch, 1)
+                              if seconds_per_epoch else None),
+        "target_epochs": max_epochs,
+        "remaining_epochs": remaining_epochs,
+        "projected_seconds": round(projected) if projected else None,
+        "projected_human": _human_seconds(projected) if projected else None,
+    }
+    if rate_source == "wall-clock" and rate > 0:
+        result["note"] = ("rate includes startup and first-run "
+                          "phonemization; treat the projection as an "
+                          "upper bound")
+    print(f"train preview: {steps} steps in {elapsed:.1f}s "
+          f"({rate:.2f} it/s, {rate_source}); full run "
+          f"({remaining_epochs} epochs x {steps_per_epoch} steps) "
+          f"projected {result['projected_human'] or 'n/a'}", flush=True)
+    return _write_preview(pdir, "train", params, result)
+
+
 def _preview(project: Project, params: dict, emit) -> dict:
     stage = params.get("stage")
     if stage == "segment":
@@ -620,9 +800,11 @@ def _preview(project: Project, params: dict, emit) -> dict:
         return _preview_segment_all(project, params, emit)
     if stage == "denoise":
         return _preview_denoise(project, params, emit)
+    if stage == "train":
+        return _preview_train(project, params, emit)
     raise RuntimeError(f"unknown preview stage {stage!r} "
-                       "(segment, segment-all and denoise ship today; "
-                       "finalize, transcribe, train and audition later)")
+                       "(segment, segment-all, denoise and train ship "
+                       "today; finalize, transcribe and audition later)")
 
 
 HANDLERS = {

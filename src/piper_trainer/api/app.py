@@ -530,6 +530,22 @@ def create_app(workspace: Path | None = None,
                 out["projected_seconds"] = round(wall / epoch_now * epochs)
                 out["basis"] = (f"last run took {wall / 3600:.1f} h "
                                 f"to reach epoch {epoch_now}")
+        else:
+            # Next-best basis when nothing full has run yet: a measured
+            # train preview (§2.2) — a real ~50-step burst on this machine
+            # and this dataset beats any guess.
+            measured = [j for j in manager().list_for_project(proj.root)
+                        if j["kind"] == "preview" and j["state"] == "succeeded"
+                        and (j.get("params") or {}).get("stage") == "train"
+                        and (j.get("result") or {}).get("steps_per_sec")]
+            if measured and steps:
+                r = max(measured,
+                        key=lambda j: j.get("finished_at") or "")["result"]
+                sps = r["steps_per_sec"]
+                out["seconds_per_epoch"] = round(steps / sps, 1)
+                out["projected_seconds"] = round(steps / sps * epochs)
+                out["basis"] = (f"measured: {r['steps_planned']} steps at "
+                                f"{sps:g} it/s (train preview)")
         return out
 
     # ------------------------------------------------------------- previews
