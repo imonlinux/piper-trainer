@@ -11,6 +11,7 @@ import pytest
 
 from piper_trainer import prepare
 from piper_trainer.api import runner
+from piper_trainer.config import Project
 
 
 def make_job(tmp_path, kind, params=None):
@@ -134,6 +135,34 @@ def test_train_add_epochs_implies_resume_auto(tmp_path, monkeypatch):
     assert seen["resume"] == ckpt
     assert seen["max_epochs"] == 110  # 100 in the checkpoint + 10 more
     assert result["max_epochs"] == 110
+
+
+def test_transcribe_emits_target_and_per_clip_progress(
+        tmp_path, monkeypatch, capsys):
+    """Regression: the transcribe stage ran silent — state went 'running'
+    with a frozen bar and an empty log until RESULT landed at 100%. It must
+    emit TARGET up front and PROGRESS per clip, like every other stage."""
+    jd = make_job(tmp_path, "transcribe", {})
+    proj = Project.load(tmp_path / "proj")
+    proj.ensure()
+    (proj.wavs / "a.wav").write_bytes(b"a")
+    (proj.wavs / "b.wav").write_bytes(b"b")
+
+    def fake_transcribe(project, on_progress=None, **kw):
+        for i, wav in enumerate(sorted(project.wavs.glob("*.wav"))):
+            if on_progress:
+                on_progress(i + 1, 2, wav.name)
+        return {"clips": 2, "transcribed": 2, "skipped": 0}
+
+    monkeypatch.setattr(runner.transcribe_mod, "transcribe", fake_transcribe)
+
+    result = runner.execute(jd)
+
+    assert result["stats"]["clips"] == 2
+    out = capsys.readouterr().out
+    assert "##TARGET " in out and '"unit": "clip"' in out
+    assert out.count("##PROGRESS ") == 2
+    assert "clip 1/2: a.wav" in out and "clip 2/2: b.wav" in out
 
 
 def test_process_entry_emits_result_and_exits_zero(tmp_path):

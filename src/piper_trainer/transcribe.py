@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import os
 import wave
+from collections.abc import Callable
 from pathlib import Path
 
 from . import metadata
@@ -36,7 +37,9 @@ def _load_audit(path: Path) -> dict[str, list[str]]:
 def transcribe(project: Project, model_size: str | None = None,
                language: str = "en", device: str = "cpu",
                compute_type: str = "int8",
-               retranscribe: bool = False) -> dict:
+               retranscribe: bool = False,
+               on_progress: Callable[[int, int, str], None] | None = None
+               ) -> dict:
     """Use a LARGE model: this is a batch job with no latency requirement, and
     small-model errors bury you in false audit flags.
 
@@ -46,6 +49,10 @@ def transcribe(project: Project, model_size: str | None = None,
 
     vad_filter=False because segmentation already happened; Whisper's own VAD
     can trim audio it thinks is silence and desync transcript from clip.
+
+    on_progress(done, total, filename) fires after each clip — transcribed
+    or skipped — so a long batch can stream a live counter instead of
+    going silent for the whole run.
     """
     wavs = sorted(project.wavs.glob("*.wav"))
     existing: dict[str, str] = {}
@@ -67,7 +74,7 @@ def transcribe(project: Project, model_size: str | None = None,
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
     rows, audit, transcribed, skipped, total_seconds = [], [], 0, 0, 0.0
-    for wav in wavs:
+    for i, wav in enumerate(wavs):
         dur = duration(wav)
         total_seconds += dur
         if not retranscribe and wav.stem in existing:
@@ -77,6 +84,8 @@ def transcribe(project: Project, model_size: str | None = None,
                 # carry the original audit row forward verbatim
                 audit.append(audit_old[wav.name])
                 rows.append([wav.stem, text])
+                if on_progress:
+                    on_progress(i + 1, len(wavs), wav.name)
                 continue
             info = None
         else:
@@ -85,6 +94,8 @@ def transcribe(project: Project, model_size: str | None = None,
                 vad_filter=False, condition_on_previous_text=False)
             text = " ".join(s.text.strip() for s in segments).strip()
             transcribed += 1
+        if on_progress:
+            on_progress(i + 1, len(wavs), wav.name)
         cps = len(text) / dur if dur else 0.0
         prob = f"{info.language_probability:.3f}" if info is not None else ""
         rows.append([wav.stem, text])

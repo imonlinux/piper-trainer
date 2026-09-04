@@ -102,12 +102,23 @@ def _prepare(project: Project, params: dict, emit) -> dict:
 
 
 def _transcribe(project: Project, params: dict, emit) -> dict:
+    # Per-clip reporting: without it a large-v3 batch over hundreds of
+    # clips is a silent log and a frozen bar for however long the model
+    # needs, then a 100% jump the moment RESULT lands.
+    total = len(list(project.wavs.glob("*.wav")))
+    emit("TARGET", {"total": total, "unit": "clip"})
+
+    def on_progress(done: int, total: int, name: str) -> None:
+        emit("PROGRESS", {"current": done, "total": total, "unit": "clip"})
+        print(f"clip {done}/{total}: {name}", flush=True)
+
     stats = transcribe_mod.transcribe(
         project,
         model_size=params.get("model"),
         language=params.get("language", "en"),
         device=params.get("device", "cpu"),
         retranscribe=params.get("retranscribe", False),
+        on_progress=on_progress,
     )
     return {"stats": stats}
 

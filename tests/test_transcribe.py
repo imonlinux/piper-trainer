@@ -98,6 +98,29 @@ def test_retranscribe_forces_full_pass(tmp_path, fake_whisper):
     assert stats["skipped"] == 0
 
 
+def test_on_progress_fires_for_every_clip(tmp_path, fake_whisper):
+    """The live-progress contract: one callback per clip, in filename
+    order, covering skipped clips too — a resumed run must still move
+    the bar, not stall until RESULT."""
+    proj = Project(root=tmp_path, name="t")
+    proj.ensure()
+    for stem in ("a", "b", "c"):
+        write_tone(proj.wavs / f"{stem}.wav")
+
+    seen: list[tuple[int, int, str]] = []
+    transcribe.transcribe(
+        proj, on_progress=lambda d, t, n: seen.append((d, t, n)))
+    assert seen == [(1, 3, "a.wav"), (2, 3, "b.wav"), (3, 3, "c.wav")]
+
+    # Resumable pass: 3 skipped + 1 fresh, callback still fires 4 times.
+    write_tone(proj.wavs / "d.wav")
+    seen.clear()
+    transcribe.transcribe(
+        proj, on_progress=lambda d, t, n: seen.append((d, t, n)))
+    assert seen == [
+        (1, 4, "a.wav"), (2, 4, "b.wav"), (3, 4, "c.wav"), (4, 4, "d.wav")]
+
+
 def test_malformed_lines_survive_only_missing_rewrite(tmp_path, fake_whisper):
     """A hand-edited malformed row must survive a --only-missing run that
     rewrites metadata.csv — appended at the end, counted in the result."""
