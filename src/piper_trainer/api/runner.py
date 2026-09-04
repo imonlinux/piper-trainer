@@ -481,14 +481,19 @@ def _preview_segment(project: Project, params: dict, emit) -> dict:
         (pdir / "_dn").rmdir()
 
     emit("PROGRESS", {"current": 3, "total": 3, "unit": "step"})
+    threshold = float(params.get("energy_threshold", 55))
     clips = prepare.split_audio(
         work, pdir, stem=src.stem,
-        energy_threshold=float(params.get("energy_threshold", 55)),
+        energy_threshold=threshold,
         min_dur=float(params.get("min_dur", 1.5)),
         max_dur=float(params.get("max_dur", 10.0)),
         max_silence=float(params.get("max_silence", 0.4)),
         max_leading_silence=float(params.get("pad", 0.15)),
         max_trailing_silence=float(params.get("pad", 0.15)))
+    # Measured on the exact audio that was just split, so the UI can say WHY
+    # a file produced nothing (quiet source vs threshold) instead of only
+    # advising blind dial-turning.
+    level = prepare.wav_level_dbfs(work)
     shutil.rmtree(workdir, ignore_errors=True)
 
     for extra in clips[keep:]:  # previews stay small; keep the first N
@@ -499,7 +504,13 @@ def _preview_segment(project: Project, params: dict, emit) -> dict:
               "histogram": _histogram(durs),
               "clips": clips[:200],       # boundaries for the overlay
               "clips_truncated": len(clips) > 200,
-              "audio": [c["clip"] for c in clips[:keep]]}
+              "audio": [c["clip"] for c in clips[:keep]],
+              "level": level}
+    if not clips:
+        print(f"! {src.name}: 0 clips — speech level {level['speech_dbfs']} "
+              f"dBFS vs threshold {threshold:g} (rejects below "
+              f"{threshold - prepare.INT16_FULL_SCALE_DB:.1f} dBFS); lower "
+              "the energy threshold below the speech level", flush=True)
     emit("TARGET", {"total": len(clips), "unit": "clip"})
     return _write_preview(pdir, "segment", params, result)
 

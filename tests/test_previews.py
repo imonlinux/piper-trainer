@@ -9,6 +9,7 @@ hand-written preview.json files.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 
 import pytest
@@ -40,15 +41,29 @@ def make_job(tmp_path, params):
 
 @pytest.fixture
 def segment_stubs(monkeypatch):
-    """Deterministic 5-clip split: 3x ~2 s, 1x ~7 s, 1x ~12 s."""
+    """Deterministic 5-clip split: 3x ~2 s, 1x ~7 s, 1x ~12 s. The converted
+    and denoised outputs are real 16-bit WAVs (a small sine) so the preview's
+    level measurement exercises the same code it runs in production."""
+    def fake_wav(path, amp=1000):
+        import math
+        import wave
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(b"".join(
+                int(amp * math.sin(2 * math.pi * 220 * i / 48000))
+                .to_bytes(2, "little", signed=True)
+                for i in range(4800)))
+
     def fake_convert(src, dst, channel=None):
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(b"RIFF-48k")
+        fake_wav(dst)
 
     def fake_denoise(src, dst_dir):
-        dst_dir.mkdir(parents=True, exist_ok=True)
         out = dst_dir / src.name
-        out.write_bytes(b"RIFF-denoised")
+        fake_wav(out)
         return out
 
     def fake_excerpt(src, dst, seconds):
@@ -90,6 +105,12 @@ def test_segment_preview_writes_preview_json(tmp_path, segment_stubs):
     assert [c["start"] for c in result["clips"]] == [0.0, 2.5, 5.0, 8.0, 16.0]
     hist = result["histogram"]
     assert {h["count"] for h in hist} == {3, 1, 1}   # 3 short, 7 s, 12 s
+
+    # level of the real wav the stub wrote: a 1000/32768 sine
+    assert result["level"]["peak_dbfs"] == pytest.approx(
+        20 * math.log10(1000 / 32768), abs=0.2)
+    assert result["level"]["speech_dbfs"] == pytest.approx(
+        result["level"]["rms_dbfs"], abs=1.0)  # constant tone: no gaps
 
     on_disk = json.loads((pdir / "preview.json").read_text())
     assert on_disk["params"] == {"source": "take.wav", "channel": "left",

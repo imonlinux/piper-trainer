@@ -220,6 +220,17 @@ export function PreparePage({ name }: { name: string }) {
             {c}
           </label>
         ))}
+        {hasSources && source !== "" && (
+          <>
+            <span className="muted">play source</span>
+            <audio
+              controls
+              key={source}
+              src={fileUrl(name, "raw", source)}
+              style={{ width: "16em" }}
+            />
+          </>
+        )}
         <button disabled={!source} onClick={() => void deleteCurrent()}>
           delete this source
         </button>
@@ -284,7 +295,13 @@ export function PreparePage({ name }: { name: string }) {
           click a preview id below to inspect its clips here
         </p>
       ) : (
-        <SelectedClips row={selected} project={name} />
+        <SelectedClips
+          row={selected}
+          project={name}
+          energy={dials.energy_threshold}
+          onApplyThreshold={(v) =>
+            setDials((d) => ({ ...d, energy_threshold: v }))}
+        />
       )}
 
       <h2>Segment sweep</h2>
@@ -313,12 +330,14 @@ export function PreparePage({ name }: { name: string }) {
                   {row.id}
                 </a>
                 {(row.result.audio ?? []).map((f) => (
-                  <audio
-                    key={f}
-                    controls
-                    src={fileUrl(name, row.dir, f)}
-                    style={{ width: "100%" }}
-                  />
+                  <div key={f}>
+                    <div className="muted">{f.replace(/\.wav$/, "")}</div>
+                    <audio
+                      controls
+                      src={fileUrl(name, row.dir, f)}
+                      style={{ width: "100%" }}
+                    />
+                  </div>
                 ))}
               </div>
             ))}
@@ -383,21 +402,59 @@ function useSweepPoll(
   }, [name, gone]);
 }
 
-function SelectedClips({ row, project }: { row: PreviewRow; project: string }) {
+function SelectedClips({
+  row,
+  project,
+  energy,
+  onApplyThreshold,
+}: {
+  row: PreviewRow;
+  project: string;
+  energy: number;
+  onApplyThreshold: (v: number) => void;
+}) {
   const audio = row.result.audio ?? [];
   const head =
     row.stage === "denoise"
       ? `denoise A/B from ${row.id} (original vs denoised, ${row.result.seconds ?? "?"}s)`
       : `clips from ${row.id} (${row.result.clip_count ?? "?"} total, first ${audio.length} playable)`;
-  // A segment preview that found nothing: say which dials to move.
+  // auditok's energy_threshold is 20*log10 of int16-scaled RMS, so a
+  // threshold of 55 rejects every window quieter than -35.3 dBFS. A clear
+  // but quietly recorded source never clears that bar: say so with the
+  // measured numbers, and offer the dial value that would.
+  const level = row.result.level;
+  const suggested =
+    level === undefined
+      ? null
+      : Math.max(20, Math.floor(level.speech_dbfs + 90.3) - 6);
   const empty =
     row.stage === "segment" && row.result.clip_count === 0 ? (
-      <p className="notice">
-        0 clips: the splitter rejected every region. Lower the energy
-        threshold, lower the min duration for short utterances, or pick
-        left/right when only one channel has audio (downmix averages in the
-        silent side). Then preview segment again.
-      </p>
+      level ? (
+        <p className="notice">
+          0 clips: the splitter rejected every region. This file's speech
+          sits at {level.speech_dbfs} dBFS RMS (peak {level.peak_dbfs}); the
+          energy threshold ({energy}) rejects anything below{" "}
+          {(energy - 90.3).toFixed(1)} dBFS, and this file never clears it.{" "}
+          {suggested !== null && suggested !== energy && (
+            <>
+              <button onClick={() => onApplyThreshold(suggested)}>
+                set energy threshold to {suggested}
+              </button>{" "}
+              and preview segment again.{" "}
+            </>
+          )}
+          Still nothing: lower min duration for short utterances, or pick
+          left/right when only one channel has audio (downmix averages in
+          the silent side).
+        </p>
+      ) : (
+        <p className="notice">
+          0 clips: the splitter rejected every region. Lower the energy
+          threshold, lower the min duration for short utterances, or pick
+          left/right when only one channel has audio (downmix averages in
+          the silent side). Then preview segment again.
+        </p>
+      )
     ) : null;
   return (
     <>

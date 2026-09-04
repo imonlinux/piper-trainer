@@ -154,6 +154,7 @@ export interface PreviewRow {
     histogram?: HistBin[];
     seconds?: number;
     clips?: Region[];
+    level?: { peak_dbfs: number; rms_dbfs: number; speech_dbfs: number };
   };
   created_at?: string;
 }

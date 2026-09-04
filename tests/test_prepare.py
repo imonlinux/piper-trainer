@@ -177,3 +177,81 @@ def test_run_all_clears_previous_clips_from_wavs(proj, fake_tools):
     names = sorted(p.name for p in proj.wavs.glob("*.wav"))
     assert stray.name not in names
     assert len(names) == 2
+
+
+# ------------------------------------------------------ zero-clip visibility
+
+def test_segment_reports_per_source_counts(proj, fake_tools, capsys):
+    (proj.denoised / "a.wav").write_bytes(b"x")
+    total, per_source = prepare.segment(proj)
+    assert total == 2
+    assert per_source == {"a.wav": 2}
+    assert "segment: a.wav: 2 clips" in capsys.readouterr().out
+
+
+def test_zero_clip_source_is_flagged_in_run_all(proj, fake_tools, monkeypatch):
+    """A source the VAD rejects used to vanish silently: no clips, no
+    transcripts, no training data, and nothing in the run's stats saying
+    why. The run must now name it."""
+    class _Region:
+        def __init__(self, path):
+            self._path = path
+
+        def split(self, **kw):
+            # the quiet file finds nothing above the threshold
+            return [] if "quiet" in self._path else _EVENTS
+
+    _EVENTS = [types.SimpleNamespace(start=0.0, end=2.0,
+                                     save=lambda p: Path(p).write_bytes(b"x")),
+               types.SimpleNamespace(start=2.5, end=4.5,
+                                     save=lambda p: Path(p).write_bytes(b"x"))]
+    fake_auditok = types.ModuleType("auditok")
+    fake_auditok.load = lambda p: _Region(p)
+    monkeypatch.setitem(sys.modules, "auditok", fake_auditok)
+
+    (proj.raw / "a.wav").write_bytes(b"x")
+    (proj.raw / "quiet.wav").write_bytes(b"x")
+    stats = prepare.run_all(proj)
+    assert stats["clips"] == 2
+    assert stats["clips_zero_sources"] == ["quiet.wav"]
+    assert stats["clips_per_source"] == {"a.wav": 2, "quiet.wav": 0}
+
+
+# ----------------------------------------------------------------- levels
+
+def test_wav_level_dbfs_reports_peak_rms_and_speech(tmp_path):
+    import math
+    import wave
+
+    path = tmp_path / "lvl.wav"
+    amp = 8000
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        # 1 s of sine, then 1 s of digital silence: speech must reflect the
+        # loud half only, while the overall RMS is pulled down by the gap
+        frames = b"".join(
+            int(amp * math.sin(2 * math.pi * 220 * i / 48000))
+            .to_bytes(2, "little", signed=True) for i in range(48000))
+        w.writeframes(frames + bytes(96000))
+
+    lvl = prepare.wav_level_dbfs(path)
+    expected_peak = 20 * math.log10(amp / 32768)
+    assert lvl["peak_dbfs"] == pytest.approx(expected_peak, abs=0.1)
+    assert lvl["speech_dbfs"] == pytest.approx(
+        expected_peak - 3.0, abs=0.5)   # sine RMS = amp/sqrt(2)
+    assert lvl["rms_dbfs"] < lvl["speech_dbfs"] - 2.5  # silence dilutes it
+
+
+def test_wav_level_dbfs_rejects_non_16bit(tmp_path):
+    import wave
+
+    path = tmp_path / "w.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(1)
+        w.setframerate(48000)
+        w.writeframes(bytes(4800))
+    with pytest.raises(ValueError, match="16-bit mono"):
+        prepare.wav_level_dbfs(path)

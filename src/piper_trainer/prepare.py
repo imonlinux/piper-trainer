@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -39,6 +40,13 @@ PLAYABLE_EXT = AUDIO_EXT - {".mkv"}
 PAN = {"left": "pan=mono|c0=c0", "right": "pan=mono|c0=c1"}
 
 SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+# auditok's energy_threshold lives on 20*log10(RMS) of int16-scaled samples,
+# where full scale is 32768: a threshold of 55 rejects every analysis window
+# quieter than 55 - this constant (about -35.3) dBFS RMS. Clear-but-quiet
+# recordings fail that bar on playback perfectly well, so the level helpers
+# below report dBFS figures the UI can put next to the threshold.
+INT16_FULL_SCALE_DB = 20.0 * math.log10(32768)
 
 
 def _run(cmd: list[str]) -> None:
@@ -271,6 +279,49 @@ def split_audio(
     return clips
 
 
+def wav_level_dbfs(path: Path, window_seconds: float = 0.2) -> dict:
+    """Level profile of a 16-bit mono WAV: peak, overall RMS and speech RMS.
+
+    speech_dbfs is the 95th-percentile RMS across 0.2 s windows, so silence
+    gaps do not dilute it; it is the honest comparator for energy_threshold
+    (see INT16_FULL_SCALE_DB). Read in chunks so an hour-long source never
+    sits in memory whole. numpy rides in with auditok, so no new dependency.
+    """
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(path), "rb") as w:
+        if w.getsampwidth() != 2 or w.getnchannels() != 1:
+            raise ValueError("expected a 16-bit mono WAV")
+        rate = w.getframerate()
+        win = max(1, int(rate * window_seconds))
+        peak = 0
+        sq_total = 0.0
+        n_total = 0
+        window_rms: list[float] = []
+        while True:
+            frames = w.readframes(win)
+            if not frames:
+                break
+            x = np.frombuffer(frames, dtype="<i2").astype(np.float64)
+            if x.size == 0:
+                continue
+            peak = max(peak, int(np.max(np.abs(x))))
+            sq_total += float(np.sum(x * x))
+            n_total += x.size
+            window_rms.append(float(np.sqrt(np.mean(x * x))))
+
+    def db(v: float) -> float:
+        return round(20.0 * math.log10(max(v, 1e-10) / 32768.0), 1)
+
+    rms = math.sqrt(sq_total / n_total) if n_total else 0.0
+    speech = sorted(window_rms)[int(0.95 * (len(window_rms) - 1))] \
+        if window_rms else 0.0
+    return {"peak_dbfs": db(float(peak)), "rms_dbfs": db(rms),
+            "speech_dbfs": db(speech)}
+
+
 # --------------------------------------------------------------------- stages
 
 def to_48k(project: Project, channel: str | None = None,
@@ -337,25 +388,31 @@ def segment(
     max_leading_silence: float = 0.15,
     max_trailing_silence: float = 0.15,
     force: bool = False,
-) -> int | str:
+) -> tuple[int | str, dict[str, int]]:
     """Energy-based VAD split. Not a model — the threshold is a per-recording
     dial, and denoised audio usually wants a LOWER value than the default.
 
     Leading/trailing silence keeps natural onsets and fade-outs (clipped
     plosives teach the model to swallow consonants) and gives every clip the
     same padding, which matters because VITS learns the padding too.
+
+    Returns (total, per-source clip counts). A source with zero clips used to
+    vanish silently from the run; now every source's count is logged and a
+    zero-count source is called out by name, because nothing downstream
+    (transcribe, train) will ever see that audio again.
     """
     srcs = sorted(project.denoised.glob("*.wav"))
     if not srcs:
-        return 0
+        return 0, {}
     params = dict(energy_threshold=energy_threshold, min_dur=min_dur,
                   max_dur=max_dur, max_silence=max_silence,
                   max_leading_silence=max_leading_silence,
                   max_trailing_silence=max_trailing_silence)
     if not force and _stage_matches(project.clips, "segment", params, srcs):
-        return "skipped"
+        return "skipped", {}
     _clear_dir(project.clips)
     total = 0
+    per_source: dict[str, int] = {}
     for src in srcs:
         clips = split_audio(src, project.clips,
                             energy_threshold=energy_threshold,
@@ -363,9 +420,16 @@ def segment(
                             max_silence=max_silence,
                             max_leading_silence=max_leading_silence,
                             max_trailing_silence=max_trailing_silence)
+        per_source[src.name] = len(clips)
         total += len(clips)
+        print(f"segment: {src.name}: {len(clips)} clips", flush=True)
+        if not clips:
+            print(f"! segment: {src.name}: 0 clips — this source contributes "
+                  "NOTHING to the dataset. Try a lower energy threshold "
+                  "(Prepare tuner) or check the file's level with the "
+                  "denoise A/B preview.", flush=True)
     _write_stage_manifest(project.clips, "segment", params, srcs, total)
-    return total
+    return total, per_source
 
 
 def finalize(project: Project, tier: str = "medium",
@@ -408,7 +472,14 @@ def run_all(project: Project, tier: str = "medium", channel: str | None = None,
     stats["denoised"] = denoise(project, enabled=denoise_enabled, force=force)
     if on_stage:
         on_stage(3, "segment")
-    stats["clips"] = segment(project, force=force, **seg_kwargs)
+    seg, per_source = segment(project, force=force, **seg_kwargs)
+    stats["clips"] = seg
+    zero = sorted(k for k, v in per_source.items() if v == 0)
+    if zero:
+        # only surfaced when it matters: a silent source drop is the one
+        # segment outcome the operator must never miss
+        stats["clips_per_source"] = per_source
+        stats["clips_zero_sources"] = zero
     if on_stage:
         on_stage(4, "finalize")
     stats["finalized"] = finalize(project, tier=tier, force=force)
