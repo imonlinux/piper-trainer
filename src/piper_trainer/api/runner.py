@@ -119,6 +119,7 @@ def _transcribe(project: Project, params: dict, emit) -> dict:
         language=params.get("language", "en"),
         device=params.get("device", "cpu"),
         retranscribe=params.get("retranscribe", False),
+        normalize=params.get("normalize", True),
         on_progress=on_progress,
     )
     return {"stats": stats}

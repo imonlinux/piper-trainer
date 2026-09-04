@@ -12,7 +12,7 @@ import wave
 from collections.abc import Callable
 from pathlib import Path
 
-from . import metadata
+from . import metadata, textnorm
 from .config import Project
 
 
@@ -38,6 +38,7 @@ def transcribe(project: Project, model_size: str | None = None,
                language: str = "en", device: str = "cpu",
                compute_type: str = "int8",
                retranscribe: bool = False,
+               normalize: bool = True,
                on_progress: Callable[[int, int, str], None] | None = None
                ) -> dict:
     """Use a LARGE model: this is a batch job with no latency requirement, and
@@ -49,6 +50,12 @@ def transcribe(project: Project, model_size: str | None = None,
 
     vad_filter=False because segmentation already happened; Whisper's own VAD
     can trim audio it thinks is silence and desync transcript from clip.
+
+    normalize=True rewrites fresh transcripts into spoken form ("9000" ->
+    "nine thousand", "Mr." -> "Mister"; textnorm module) so clips stop
+    landing in the audit queue for hand corrections. Skip-path transcripts
+    (already in metadata.csv, i.e. human-corrected) are carried forward
+    verbatim and never re-normalized.
 
     on_progress(done, total, filename) fires after each clip — transcribed
     or skipped — so a long batch can stream a live counter instead of
@@ -74,6 +81,8 @@ def transcribe(project: Project, model_size: str | None = None,
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
     rows, audit, transcribed, skipped, total_seconds = [], [], 0, 0, 0.0
+    nml_engine = textnorm.engine()  # None when inflect is absent
+    n_abbr = n_num = 0
     for i, wav in enumerate(wavs):
         dur = duration(wav)
         total_seconds += dur
@@ -93,6 +102,10 @@ def transcribe(project: Project, model_size: str | None = None,
                 str(wav), language=language, beam_size=5,
                 vad_filter=False, condition_on_previous_text=False)
             text = " ".join(s.text.strip() for s in segments).strip()
+            if normalize:
+                text, counts = textnorm.normalize(text, engine=nml_engine)
+                n_abbr += counts["abbreviations"]
+                n_num += counts["numbers"]
             transcribed += 1
         if on_progress:
             on_progress(i + 1, len(wavs), wav.name)
@@ -114,4 +127,5 @@ def transcribe(project: Project, model_size: str | None = None,
 
     return {"clips": len(rows), "transcribed": transcribed, "skipped": skipped,
             "malformed_preserved": len(preserve),
-            "total_seconds": total_seconds}
+            "total_seconds": total_seconds,
+            "normalized": {"abbreviations": n_abbr, "numbers": n_num}}

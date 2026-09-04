@@ -150,6 +150,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--retranscribe", action="store_true",
                     help="transcribe every clip, ignoring existing "
                          "metadata.csv rows")
+    sp.add_argument("--no-normalize", dest="normalize",
+                    action="store_false", default=True,
+                    help="keep Whisper's written form (digits, 'Mr.') "
+                         "instead of rewriting to spoken form")
     sp.add_argument("--only-missing", action="store_true",
                     help="transcribe only clips missing from metadata.csv "
                          "(the default; stated explicitly for the API layer)")
@@ -323,10 +327,15 @@ def main(argv: list[str] | None = None) -> int:
             stats = transcribe.transcribe(proj, model_size=args.model,
                                           language=args.language,
                                           device=args.device,
-                                          retranscribe=args.retranscribe)
+                                          retranscribe=args.retranscribe,
+                                          normalize=args.normalize)
         print(f"{stats['transcribed']} transcribed, {stats['skipped']} "
               f"skipped, {stats['total_seconds']/60:.1f} min -> "
               f"{proj.metadata}")
+        if args.normalize:
+            nz = stats["normalized"]
+            print(f"normalized: {nz['numbers']} numbers, "
+                  f"{nz['abbreviations']} abbreviations")
         if stats["malformed_preserved"]:
             print(f"{stats['malformed_preserved']} malformed line(s) from "
                   f"the previous metadata carried through — run validate")
