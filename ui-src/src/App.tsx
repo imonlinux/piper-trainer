@@ -7,6 +7,7 @@ import { NewProjectPage } from "./pages/NewProject";
 import { PreparePage } from "./pages/Prepare";
 import { ProjectPage } from "./pages/Project";
 import { ProjectsPage } from "./pages/Projects";
+import { TrainPage } from "./pages/Train";
 
 type Route =
   | { page: "projects" }
@@ -14,7 +15,8 @@ type Route =
   | { page: "doctor" }
   | { page: "project"; name: string }
   | { page: "prepare"; name: string }
-  | { page: "audit"; name: string };
+  | { page: "audit"; name: string }
+  | { page: "train"; name: string };
 
 // Same hash routes the pre-React UI used: bookmarks and muscle memory
 // keep working across the cutover.
@@ -28,6 +30,8 @@ function parseRoute(hash: string): Route {
     return { page: "prepare", name: decodeURIComponent(h.slice(10)) };
   if (h.startsWith("#/audit/"))
     return { page: "audit", name: decodeURIComponent(h.slice(8)) };
+  if (h.startsWith("#/train/"))
+    return { page: "train", name: decodeURIComponent(h.slice(8)) };
   return { page: "projects" };
 }
 
@@ -60,6 +64,9 @@ export default function App() {
       break;
     case "audit":
       page = <AuditPage key={route.name} name={route.name} />;
+      break;
+    case "train":
+      page = <TrainPage key={route.name} name={route.name} />;
       break;
     default:
       page = <ProjectsPage />;

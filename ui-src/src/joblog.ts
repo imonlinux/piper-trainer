@@ -10,6 +10,49 @@ import type { Job } from "./types";
 
 const DIRECTIVE_RE = /^##[0-9a-f]+ (TARGET|PROGRESS|RESULT) (\{.*\})$/;
 const EPOCH_RE = /\bEpoch (\d+):/;
+// Lightning prints metrics as `key=value` (or `key=value`) lists at the
+// end of each "Epoch N:" progress line. Both loss keys are optional per
+// line: validation_loss only appears on check epochs.
+const TRAIN_LOSS_RE = /\btraining_loss[=:]\s*([0-9.]+(?:[eE][+-]?\d+)?)/;
+const VAL_LOSS_RE = /\bvalidation_loss[=:]\s*([0-9.]+(?:[eE][+-]?\d+)?)/;
+
+// One point of the Train screen's loss curve (§6.4): the epoch counter
+// and whichever losses that epoch's line carried.
+export interface LossPoint {
+  epoch: number;
+  train: number | null;
+  val: number | null;
+}
+
+export function lossPoint(line: string): LossPoint | null {
+  const ep = EPOCH_RE.exec(line);
+  if (ep === null) return null;
+  const t = TRAIN_LOSS_RE.exec(line);
+  const v = VAL_LOSS_RE.exec(line);
+  if (t === null && v === null) return null;
+  return {
+    epoch: parseInt(ep[1], 10),
+    train: t === null ? null : parseFloat(t[1]),
+    val: v === null ? null : parseFloat(v[1]),
+  };
+}
+
+// Fold a stream of lines into per-epoch points; the last loss wins per
+// epoch (Lightning can echo an epoch line more than once).
+export function lossHistory(lines: string[]): LossPoint[] {
+  const byEpoch = new Map<number, LossPoint>();
+  for (const line of lines) {
+    const p = lossPoint(line);
+    if (p === null) continue;
+    const prev = byEpoch.get(p.epoch);
+    byEpoch.set(p.epoch, {
+      epoch: p.epoch,
+      train: p.train ?? prev?.train ?? null,
+      val: p.val ?? prev?.val ?? null,
+    });
+  }
+  return [...byEpoch.values()].sort((a, b) => a.epoch - b.epoch);
+}
 
 export interface LogSummary {
   unit: string | null;

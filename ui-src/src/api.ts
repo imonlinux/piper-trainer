@@ -26,6 +26,13 @@ export async function api<T>(path: string, opts?: RequestInit): Promise<T> {
 
 export const get = <T,>(path: string): Promise<T> => api<T>(path);
 
+// Plain-text endpoints (the full job log): no JSON envelope to unwrap.
+export async function getText(path: string): Promise<string> {
+  const res = await fetch(`/api${path}`);
+  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  return res.text();
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return api<T>(path, {
     method: "POST",

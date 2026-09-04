@@ -65,9 +65,11 @@ def test_ingest_collision_gets_index(tmp_path, monkeypatch):
     assert names == ["a_b-1.wav", "a_b.wav"]  # '-' sorts before '.'
 
 
-def test_ingest_rejects_other_source_types(tmp_path):
-    jd = make_job(tmp_path, "ingest", {"source_type": "media-site"})
-    with pytest.raises(RuntimeError, match="step 2"):
+def test_ingest_rejects_unknown_source_types(tmp_path):
+    """Step 2 added url / media-site / hf-dataset (§2.5.2–2.5.4); what
+    must still be refused is anything outside the known set."""
+    jd = make_job(tmp_path, "ingest", {"source_type": "carrier-pigeon"})
+    with pytest.raises(RuntimeError, match="unknown source_type"):
         runner.execute(jd)
 
 

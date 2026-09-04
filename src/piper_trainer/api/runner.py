@@ -31,6 +31,7 @@ from pathlib import Path
 
 from .. import clean as clean_mod
 from .. import export as export_mod
+from .. import ingest as ingest_mod
 from .. import metadata, prepare, train as train_mod
 from .. import transcribe as transcribe_mod
 from .. import validate as validate_mod
@@ -178,6 +179,18 @@ def _train(project: Project, params: dict, emit) -> dict:
                 "validation failed; fix the errors before training: "
                 + "; ".join(f"[{f.code}] {f.message}" for f in errors))
 
+    # warmstart (§6.4 "start from this voice"): weights-only, epoch count
+    # starts at zero. Accepts absolute paths (fetched catalog checkpoints
+    # record one) or project-relative ones (the /checkpoints listing's
+    # run entries), so the UI can echo either back verbatim.
+    warmstart = None
+    if params.get("warmstart"):
+        warmstart = Path(params["warmstart"])
+        if not warmstart.is_absolute():
+            warmstart = project.root / warmstart
+        if not warmstart.is_file():
+            raise RuntimeError(f"warmstart checkpoint not found: {warmstart}")
+
     resume = params.get("resume")
     # "N more" is a resume by definition: the epoch arithmetic needs the
     # checkpoint's counter, so add_epochs with no explicit checkpoint
@@ -219,7 +232,7 @@ def _train(project: Project, params: dict, emit) -> dict:
         batch_size=batch_size, max_epochs=max_epochs,
         num_workers=params.get("num_workers", 8),
         validation_split=validation_split,
-        warmstart=Path(params["warmstart"]) if params.get("warmstart") else None,
+        warmstart=warmstart,
         resume=resume,
         accelerator=params.get("accelerator", "gpu"),
         precision=params.get("precision", "32-true"))
@@ -252,23 +265,61 @@ def _export(project: Project, params: dict, emit) -> dict:
     return {"artifacts": [str(onnx_path), str(json_path)]}
 
 
+def _merge_transcripts(project: Project, rows: list[tuple[str, str]],
+                       landed: dict[str, str]) -> int:
+    """Append hf-dataset transcripts to dataset/metadata.csv (§2.5.4).
+    Rows key on the original audio filename; `landed` maps that to the
+    name it actually got in raw/ (collision renames). Existing rows win —
+    re-running an ingest must never duplicate or clobber edits."""
+    existing, problems = ([], [])
+    if project.metadata.exists():
+        existing, problems = metadata.read(project.metadata)
+    have = {cid for cid, _ in existing}
+    fresh = [(Path(landed[orig]).stem, text) for orig, text in rows
+             if orig in landed]
+    added = [(cid, text) for cid, text in fresh if cid not in have]
+    if not added:
+        return 0
+    merged = existing + added
+    raw_lines = {p.line_no: p.raw for p in problems}
+    metadata.write(project.metadata, merged, raw_lines=raw_lines)
+    return len(added)
+
+
 def _ingest(project: Project, params: dict, emit) -> dict:
-    """Upload ingest (design doc §2.5.1): staged files -> raw/, sanitized,
-    probed. Other source types (url, media-site, hf-dataset) are step 2."""
+    """Ingest (design doc §2.5): every source_type lands files in the
+    job's staged incoming/, then one shared pass sanitizes into raw/,
+    ffprobes, and reports the same summary. Only acquisition differs."""
     source_type = params.get("source_type", "upload")
-    if source_type != "upload":
-        raise RuntimeError(
-            f"source_type {source_type!r} arrives in step 2; only 'upload' "
-            f"is implemented")
     job_dir = params["_job_dir"]
     incoming = job_dir / "incoming"
     files = sorted(p for p in incoming.iterdir()) if incoming.exists() else []
-    if not files:
-        raise RuntimeError("no files were staged for this ingest job")
+    hf_rows: list[tuple[str, str]] | None = None
+
+    if source_type == "upload":
+        if not files:
+            raise RuntimeError("no files were staged for this ingest job")
+    elif source_type == "url":
+        incoming.mkdir(parents=True, exist_ok=True)
+        files = ingest_mod.fetch_url(params.get("url") or "", incoming, emit)
+    elif source_type == "media-site":
+        incoming.mkdir(parents=True, exist_ok=True)
+        files = ingest_mod.fetch_media_site(
+            params.get("url") or "", incoming,
+            sections=params.get("sections"),
+            playlist=bool(params.get("playlist")), emit=emit)
+    elif source_type == "hf-dataset":
+        incoming.mkdir(parents=True, exist_ok=True)
+        files, hf_rows = ingest_mod.fetch_hf_dataset(
+            params.get("repo_id") or "", incoming,
+            split=params.get("split"))
+    else:
+        raise RuntimeError(f"unknown source_type {source_type!r}")
 
     project.raw.mkdir(parents=True, exist_ok=True)
     renamed: list[dict] = []
     probed = []
+    landed: dict[str, str] = {}
     for f in files:
         stem = prepare.sanitize_stem(f.stem)
         dst = project.raw / f"{stem}{f.suffix.lower()}"
@@ -277,6 +328,7 @@ def _ingest(project: Project, params: dict, emit) -> dict:
             dst = project.raw / f"{stem}-{n}{f.suffix.lower()}"
             n += 1
         shutil.move(str(f), dst)
+        landed[f.name] = dst.name
         if dst.name != f.name:
             renamed.append({"original": f.name, "stored_as": dst.name})
         info = prepare.probe(dst)
@@ -285,7 +337,14 @@ def _ingest(project: Project, params: dict, emit) -> dict:
                        "sample_rate": info.get("sample_rate"),
                        "channels": info.get("channels"),
                        "duration": info.get("duration")})
-    return {"added": len(files), "renamed": renamed, "files": probed}
+
+    result: dict = {"added": len(files), "renamed": renamed,
+                    "files": probed, "source_type": source_type}
+    if hf_rows is not None:
+        written = _merge_transcripts(project, hf_rows, landed)
+        project.set(transcripts_provided=True)
+        result["transcripts_written"] = written
+    return result
 
 
 def _fetch_checkpoint(project: Project, params: dict, emit) -> dict:

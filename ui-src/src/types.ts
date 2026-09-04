@@ -163,3 +163,35 @@ export type StreamMsg =
   | { type: "log_reset"; text: string }
   | { type: "log"; line: string }
   | { type: "state"; job: Job };
+
+// One entry of GET /api/projects/{name}/checkpoints. `source` splits the
+// two warmstart families: catalog = fetched base voice (absolute `dir`
+// plus the fetched file mapping), run = a checkpoint of this project's
+// own runs-<tier> (project-relative `path`).
+export interface Checkpoint {
+  source: "catalog" | "run" | string;
+  catalog_path?: string;
+  dir?: string;
+  files?: Record<string, string>;
+  fetched_at?: string;
+  tier?: string;
+  path?: string;
+  name?: string;
+  epoch?: number | null;
+  mtime?: string;
+}
+
+// GET /api/projects/{name}/train/preview (§6.4): steps math is always
+// honest; the wall-clock projection only appears when a previous train
+// run provides a real seconds-per-epoch basis.
+export interface TrainPreview {
+  clips: number;
+  epochs: number;
+  batch_size: number;
+  sample_rate: number | null;
+  steps_per_epoch: number | null;
+  total_steps: number | null;
+  seconds_per_epoch: number | null;
+  projected_seconds: number | null;
+  basis: string | null;
+}

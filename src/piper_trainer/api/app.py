@@ -480,6 +480,52 @@ def create_app(workspace: Path | None = None,
     def project_checkpoints(project_id: str):
         return local_checkpoints(project_or_404(project_id))
 
+    @app.get("/api/projects/{project_id}/train/preview")
+    def train_preview(project_id: str, epochs: int = 0, batch_size: int = 32):
+        """Wall-clock projection for the Train screen (§6.4). Honest by
+        construction: steps math from the dataset, and a seconds/epoch
+        figure only when a previous train job actually ran here —
+        otherwise the field stays null and the UI says so."""
+        proj = project_or_404(project_id)
+        if epochs < 1:
+            raise HTTPException(400, "epochs must be >= 1")
+        if batch_size < 1:
+            raise HTTPException(400, "batch_size must be >= 1")
+        clips = 0
+        if proj.metadata.exists():
+            from .. import metadata as metadata_mod
+            clips = len(metadata_mod.read(proj.metadata)[0])
+        tier = proj.get("tier") or "medium"
+        steps = (clips + batch_size - 1) // batch_size if clips else None
+        out: dict = {"clips": clips, "epochs": epochs,
+                     "batch_size": batch_size,
+                     "sample_rate": TIERS.get(tier, {}).get("sample_rate"),
+                     "steps_per_epoch": steps,
+                     "total_steps": steps * epochs if steps else None,
+                     "seconds_per_epoch": None,
+                     "projected_seconds": None, "basis": None}
+        done = [j for j in manager().list_for_project(proj.root)
+                if j["kind"] == "train" and j["state"] == "succeeded"
+                and j["started_at"] and j["finished_at"]]
+        if done:
+            last = max(done, key=lambda j: j["finished_at"])
+            started = datetime.fromisoformat(last["started_at"])
+            wall = (datetime.fromisoformat(last["finished_at"])
+                    - started).total_seconds()
+            epoch_now = None
+            try:
+                from .. import train as train_mod
+                ck = train_mod.latest_checkpoint(proj, tier)
+                epoch_now = (train_mod.checkpoint_epoch(ck) if ck else None)
+            except Exception:  # noqa: BLE001 — torch may be absent
+                pass
+            if epoch_now:
+                out["seconds_per_epoch"] = round(wall / epoch_now, 1)
+                out["projected_seconds"] = round(wall / epoch_now * epochs)
+                out["basis"] = (f"last run took {wall / 3600:.1f} h "
+                                f"to reach epoch {epoch_now}")
+        return out
+
     # ------------------------------------------------------------- previews
     # §2/§4.5: a preview is a job variant — same lifecycle, same log
     # streaming — but short-lived, non-destructive and scoped to a sample.

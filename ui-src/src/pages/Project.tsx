@@ -17,10 +17,12 @@ import {
 import type { LogSummary } from "../joblog";
 import type { Job, ProjectDetail, SourceInfo } from "../types";
 
-// Project detail: directory counts, sources, upload ingest, the job
-// table with live watch, and the job actions. One page, one poll, one
-// websocket — every timer and socket here is owned by an effect and
-// cleaned up on route change (the React statement of Bones finding 7).
+// Project detail: directory counts, sources, ingest (upload / url /
+// media-site / hf-dataset), the job table with live watch, and the job
+// actions. Training moved to its own screen (§6.4) — this page links
+// there. One page, one poll, one websocket — every timer and socket
+// here is owned by an effect and cleaned up on route change (the React
+// statement of Bones finding 7).
 
 export function ProjectPage({ name }: { name: string }) {
   // ------------------------------------------------------- hooks (all of
@@ -33,6 +35,11 @@ export function ProjectPage({ name }: { name: string }) {
   const [sourceMsg, setSourceMsg] = useState("");
   const [actionError, setActionError] = useState("");
   const [uploadError, setUploadError] = useState("");
+  // Ingest source type (§2.5): upload is staged by the API; url,
+  // media-site and hf-dataset are acquired by the runner itself.
+  const [ingestMode, setIngestMode] = useState<
+    "upload" | "url" | "media-site" | "hf"
+  >("upload");
   // Set right after an upload POST: the ingest runs as a job, so the
   // sources list can only be reloaded once that job settles (the poll
   // feeds p.jobs; when we see the terminal state we reload once).
@@ -193,48 +200,61 @@ export function ProjectPage({ name }: { name: string }) {
     }
   }
 
-  async function doUpload(
+  async function doIngest(
     e: React.FormEvent<HTMLFormElement>,
   ): Promise<void> {
     e.preventDefault();
     setUploadError("");
     const formEl = e.currentTarget;
-    const input = formEl.elements.namedItem("files") as HTMLInputElement | null;
-    const fd = new FormData();
-    for (const f of input?.files ?? []) fd.append("files", f);
-    if (fd.getAll("files").length === 0) return;
     try {
-      const job = await upload<Job>(`/projects/${name}/ingest`, fd);
+      if (ingestMode === "upload") {
+        const input = formEl.elements.namedItem(
+          "files",
+        ) as HTMLInputElement | null;
+        const fd = new FormData();
+        for (const f of input?.files ?? []) fd.append("files", f);
+        if (fd.getAll("files").length === 0) return;
+        const job = await upload<Job>(`/projects/${name}/ingest`, fd);
+        setIngestId(job.id);
+      } else {
+        // The other source types (§2.5.2–2.5.4) need no staging: the
+        // runner acquires the bytes itself, so a plain job does it.
+        const fd = new FormData(formEl);
+        const opt = (k: string): string | undefined => {
+          const v = String(fd.get(k) ?? "").trim();
+          return v === "" ? undefined : v;
+        };
+        const params: Record<string, unknown> =
+          ingestMode === "url"
+            ? { source_type: "url", url: opt("url") }
+            : ingestMode === "media-site"
+              ? {
+                  source_type: "media-site",
+                  url: opt("url"),
+                  sections: opt("sections"),
+                  playlist: fd.get("playlist") === "on",
+                }
+              : {
+                  source_type: "hf-dataset",
+                  repo_id: opt("repo_id"),
+                  split: opt("split"),
+                };
+        const job = await post<Job>(`/projects/${name}/jobs`, {
+          kind: "ingest",
+          params,
+        });
+        setIngestId(job.id);
+      }
       formEl.reset();
       refreshSoon();
-      setIngestId(job.id);
     } catch (ex) {
       setUploadError(String(ex));
     }
   }
 
-  // §1.4: never expose the absolute max_epochs ceiling. A tier with no
-  // checkpoint asks for epochs (submitted as max_epochs); a trained tier
-  // asks for "N more" (submitted as add_epochs) so a resume can never
-  // set the ceiling below the restored epoch counter and exit instantly.
+  // §1.4 epoch arithmetic moved to the Train screen (§6.4): this page
+  // links there instead of hosting its own epochs box.
   const cfg = p.config ?? {};
-  const tier = cfg.tier ?? "medium";
-  const trained = p.tiers_trained.includes(tier);
-
-  async function doTrain(
-    epochs: number,
-    skipValidate: boolean,
-  ): Promise<void> {
-    if (!epochs || epochs < 1) {
-      setActionError("epochs must be a number >= 1");
-      return;
-    }
-    const params: Record<string, unknown> = trained
-      ? { add_epochs: epochs }
-      : { max_epochs: epochs };
-    if (skipValidate) params.skip_validate = true;
-    await runJob("train", params);
-  }
 
   async function doDeleteSources(): Promise<void> {
     const names = [...selSources];
@@ -375,27 +395,82 @@ export function ProjectPage({ name }: { name: string }) {
       <form
         className="row"
         onSubmit={(e) => {
-          void doUpload(e);
+          void doIngest(e);
         }}
       >
-        <input type="file" name="files" multiple />
-        <button type="submit">upload</button>
+        <select
+          value={ingestMode}
+          aria-label="source type"
+          onChange={(e) => setIngestMode(e.target.value as typeof ingestMode)}
+        >
+          <option value="upload">upload files</option>
+          <option value="url">direct url</option>
+          <option value="media-site">media site (yt-dlp)</option>
+          <option value="hf">huggingface dataset</option>
+        </select>
+        {ingestMode === "upload" && <input type="file" name="files" multiple />}
+        {ingestMode === "url" && (
+          <input
+            name="url"
+            placeholder="https://…/clip.wav"
+            style={{ width: "22em" }}
+          />
+        )}
+        {ingestMode === "media-site" && (
+          <>
+            <input
+              name="url"
+              placeholder="video page url"
+              style={{ width: "18em" }}
+            />
+            <input
+              name="sections"
+              placeholder="* 00:10-01:20 (optional)"
+              style={{ width: "15em" }}
+            />
+            <label className="inline" title="download a whole playlist instead of one video">
+              <input type="checkbox" name="playlist" />
+              playlist
+            </label>
+          </>
+        )}
+        {ingestMode === "hf" && (
+          <>
+            <input
+              name="repo_id"
+              placeholder="owner/dataset"
+              style={{ width: "16em" }}
+            />
+            <input
+              name="split"
+              placeholder="split (optional)"
+              style={{ width: "10em" }}
+            />
+          </>
+        )}
+        <button type="submit">ingest</button>
         {uploadError && <span className="error">{uploadError}</span>}
       </form>
+      <p className="muted">
+        {ingestMode === "media-site" &&
+          "extracts audio as wav; needs yt-dlp in the image, which reports its own errors when a video refuses to download"}
+        {ingestMode === "hf" &&
+          "audio-directory datasets with a csv/tsv/jsonl transcript file; parquet-embedded audio is refused"}
+        {ingestMode === "url" &&
+          "one media file over http(s); an HTML error page is refused by content type"}
+      </p>
 
       <h2>Jobs</h2>
       <p>
         <a href={`#/prepare/${name}`}>prepare tuner (segment preview + promote)</a>
         {" · "}
         <a href={`#/audit/${name}`}>audit dataset (transcripts, validation, clean)</a>
+        {" · "}
+        <a href={`#/train/${name}`}>train screen (warmstart, resume, projection)</a>
       </p>
       <div className="row">
         <button onClick={() => void runJob("prepare")}>run prepare</button>
         <button onClick={() => void runJob("transcribe")}>run transcribe</button>
-        <TrainControls
-          trained={trained}
-          onTrain={(n, skip) => void doTrain(n, skip)}
-        />
         <button onClick={() => void runJob("export")}>run export</button>
       </div>
       {actionError && <p className="error">{actionError}</p>}
@@ -422,42 +497,6 @@ export function ProjectPage({ name }: { name: string }) {
           delete (moves to .trash)
         </button>
       </p>
-    </>
-  );
-}
-
-function TrainControls(props: {
-  trained: boolean;
-  onTrain: (epochs: number, skipValidate: boolean) => void;
-}) {
-  const [epochs, setEpochs] = useState(props.trained ? "1000" : "4000");
-  const [skip, setSkip] = useState(false);
-  return (
-    <>
-      <label className="inline">
-        {props.trained ? "epochs (more)" : "epochs"}
-        <input
-          type="number"
-          min={1}
-          value={epochs}
-          style={{ width: "6em" }}
-          onChange={(e) => setEpochs(e.target.value)}
-        />
-      </label>
-      <label
-        className="inline"
-        title="train even when validation reports errors (same as the CLI's --skip-validate)"
-      >
-        <input
-          type="checkbox"
-          checked={skip}
-          onChange={(e) => setSkip(e.target.checked)}
-        />
-        skip validation
-      </label>
-      <button onClick={() => props.onTrain(parseInt(epochs, 10), skip)}>
-        {props.trained ? "train N more" : "run train"}
-      </button>
     </>
   );
 }
