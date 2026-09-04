@@ -231,6 +231,8 @@ export function AuditPage({ name }: { name: string }) {
         {data.rows.filter((r) => r.missing).length} missing WAVs ·{" "}
         {q.length} quarantine entries ·{" "}
         {datasetLevel.length ? `${datasetLevel.length} dataset-level findings` : "no findings read yet"}
+        {" · "}
+        <a href={`#/project/${name}`}>back to project</a>
       </p>
 
       <div className="row">

@@ -18,7 +18,7 @@ import type {
 // Everything else is honest projection: the wall-clock estimate exists
 // only when a previous succeeded train job measured one.
 
-type Mode = "continue" | "warm";
+type Mode = "continue" | "warm" | "scratch";
 
 function fmtDuration(sec: number): string {
   if (!Number.isFinite(sec) || sec <= 0) return "-";
@@ -88,10 +88,15 @@ export function TrainPage({ name }: { name: string }) {
         if (!alive) return;
         setDetail(d);
         setCkpts(cks);
-        // "continue" is the natural default only once a run exists;
-        // otherwise the page opens ready to start from a voice.
+        // "continue" is the natural default once a run exists; with a
+        // fetched catalog voice the page opens on warmstart; with neither,
+        // scratch is the only actionable mode (a warmstart needs a base).
         const hasRun = cks.some((c) => c.source === "run");
-        if (!hasRun) setMode("warm");
+        if (!hasRun) {
+          setMode(
+            cks.some((c) => c.source === "catalog") ? "warm" : "scratch",
+          );
+        }
         // resume hint: continue from where the last run stopped
         const ep = Math.max(
           -1,
@@ -179,7 +184,11 @@ export function TrainPage({ name }: { name: string }) {
   const b = parseInt(batch, 10);
   const ready =
     Number.isFinite(n) && n >= 1 && Number.isFinite(b) && b >= 1 &&
-    (mode === "continue" ? runCkpts.length > 0 : warmPath !== null);
+    (mode === "continue"
+      ? runCkpts.length > 0
+      : mode === "warm"
+        ? warmPath !== null
+        : true); // scratch: dials only, no base checkpoint required
 
   const loss = useMemo(
     () => lossHistory([...fullLog.split("\n"), ...lines]),
@@ -200,13 +209,17 @@ export function TrainPage({ name }: { name: string }) {
     const params: Record<string, unknown> =
       mode === "continue"
         ? { add_epochs: n }
-        : { warmstart: warmPath, max_epochs: n };
+        : mode === "warm"
+          ? { warmstart: warmPath, max_epochs: n }
+          : { max_epochs: n }; // scratch: fresh weights, counter from zero
     params.batch_size = b;
     if (skip) params.skip_validate = true;
     const what =
       mode === "continue"
         ? `continue: ${n} more epochs`
-        : `warmstart: ${n} epochs from ${warmPath}`;
+        : mode === "warm"
+          ? `warmstart: ${n} epochs from ${warmPath}`
+          : `scratch: ${n} epochs from nothing`;
     if (!confirm(`Start training?\n${what}`)) return;
     try {
       const job2 = await post<Job>(`/projects/${name}/jobs`, {
@@ -289,6 +302,15 @@ export function TrainPage({ name }: { name: string }) {
             onChange={() => setMode("warm")}
           />
           start from this voice
+        </label>
+        <label className="inline" title="no base checkpoint: train a fresh voice from nothing">
+          <input
+            type="radio"
+            name="mode"
+            checked={mode === "scratch"}
+            onChange={() => setMode("scratch")}
+          />
+          from scratch
         </label>
       </div>
       {mode === "warm" && (
