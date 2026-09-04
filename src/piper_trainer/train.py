@@ -1,6 +1,7 @@
 """Build and run the piper1-gpl training command."""
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -96,6 +97,13 @@ def build_command(
         "--trainer.check_val_every_n_epoch", str(check_val_every_n_epoch),
         # without this, lightning_logs/ lands in the launch directory
         "--trainer.default_root_dir", str(project.runs(tier)),
+        # CSV logger instead of the TensorBoard default: metrics.csv is
+        # the live loss curve's data source (§6.4 — the progress bar
+        # carries no loss values). Same save_dir/name/version tree as the
+        # default, so checkpoint discovery is untouched.
+        "--trainer.logger", "CSVLogger",
+        "--trainer.logger.dict_kwargs", json.dumps(
+            {"save_dir": str(project.runs(tier))}),
     ]
 
     for key, value in spec["model_args"].items():

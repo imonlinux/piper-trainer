@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +33,7 @@ from pathlib import Path
 from .. import clean as clean_mod
 from .. import export as export_mod
 from .. import ingest as ingest_mod
-from .. import metadata, prepare, train as train_mod
+from .. import metadata, metrics as metrics_mod, prepare, train as train_mod
 from .. import transcribe as transcribe_mod
 from .. import validate as validate_mod
 from ..config import Project, TIERS
@@ -247,8 +248,23 @@ def _train(project: Project, params: dict, emit) -> dict:
         resume=resume,
         accelerator=params.get("accelerator", "gpu"),
         precision=params.get("precision", "32-true"))
-    # run() prints the command itself; printing here too doubled it in the log
-    code = train_mod.run(cmd)
+    # Live loss curve (§6.4): the trainer's progress bar carries no loss
+    # values, so a thread tails the CSV logger's metrics.csv and prints
+    # one line per epoch — the log is the data path, same as the
+    # directives. Set only after the subprocess exits so the final drain
+    # catches the last epoch's line.
+    stop = threading.Event()
+    tailer = threading.Thread(
+        target=metrics_mod.tail_metrics,
+        args=(project.runs(tier), stop, lambda line: print(line, flush=True)),
+        daemon=True)
+    tailer.start()
+    try:
+        # run() prints the command itself; printing here too doubled it in the log
+        code = train_mod.run(cmd)
+    finally:
+        stop.set()
+        tailer.join(timeout=10)
     if code != 0:
         raise RuntimeError(f"training exited with code {code}")
     latest = train_mod.latest_checkpoint(project, tier)

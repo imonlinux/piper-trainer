@@ -33,6 +33,19 @@ def test_medium_tier_has_no_architecture_flags(tmp_path):
         str(TIERS["medium"]["sample_rate"])
 
 
+def test_build_command_selects_the_csv_logger(tmp_path):
+    """The live loss curve's data source (§6.4): CSVLogger aimed at the
+    same runs dir, so lightning_logs/version_N/checkpoints stays where
+    latest_checkpoint globs it."""
+    import json
+
+    proj = make_project(tmp_path)
+    cmd = build_command(proj, tier="medium")
+    assert flag_value(cmd, "--trainer.logger") == "CSVLogger"
+    kwargs = json.loads(flag_value(cmd, "--trainer.logger.dict_kwargs"))
+    assert kwargs == {"save_dir": str(proj.runs("medium"))}
+
+
 def test_low_and_high_tiers_emit_their_architecture_flags(tmp_path):
     for tier in ("low", "high"):
         cmd = build_command(make_project(tmp_path), tier=tier)

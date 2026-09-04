@@ -10,9 +10,10 @@ import type { Job } from "./types";
 
 const DIRECTIVE_RE = /^##[0-9a-f]+ (TARGET|PROGRESS|RESULT) (\{.*\})$/;
 const EPOCH_RE = /\bEpoch (\d+):/;
-// Lightning prints metrics as `key=value` (or `key=value`) lists at the
-// end of each "Epoch N:" progress line. Both loss keys are optional per
-// line: validation_loss only appears on check epochs.
+// Loss values arrive as "Epoch N: training_loss=…" / "Epoch N:
+// validation_loss=…" lines the runner prints while tailing Lightning's
+// CSV logger (api/metrics.py) — the trainer's own progress bar carries
+// no losses. validation_loss only appears on check epochs.
 const TRAIN_LOSS_RE = /\btraining_loss[=:]\s*([0-9.]+(?:[eE][+-]?\d+)?)/;
 const VAL_LOSS_RE = /\bvalidation_loss[=:]\s*([0-9.]+(?:[eE][+-]?\d+)?)/;
 
