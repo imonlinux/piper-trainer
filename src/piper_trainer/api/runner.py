@@ -35,6 +35,7 @@ from .. import clean as clean_mod
 from .. import export as export_mod
 from .. import ingest as ingest_mod
 from .. import metadata, metrics as metrics_mod, prepare, train as train_mod
+from .. import say as say_mod
 from .. import transcribe as transcribe_mod
 from .. import validate as validate_mod
 from ..config import Project, TIERS
@@ -797,6 +798,91 @@ def _preview_train(project: Project, params: dict, emit) -> dict:
     return _write_preview(pdir, "train", params, result)
 
 
+def _recent_checkpoints(project: Project, tier: str,
+                        limit: int) -> list[Path]:
+    """The last N saved run checkpoints, newest first. Same glob as the
+    /checkpoints listing; mtime order because Lightning writes each save
+    as it goes and the operator's question is always about the newest."""
+    runs = project.runs(tier)
+    if not runs.exists():
+        return []
+    cands = sorted(runs.glob("lightning_logs/version_*/checkpoints/*.ckpt"),
+                   key=lambda p: p.stat().st_mtime)
+    return list(reversed(cands[-limit:]))
+
+
+def _preview_audition(project: Project, params: dict, emit) -> dict:
+    """§2.3 audition: one held-out sentence rendered through N checkpoints,
+    presented A/B/C. The only cheap answer to "are more epochs helping?" —
+    if the newest take is not clearly better than its predecessor, the run
+    has plateaued and the effort belongs in more audio, not more epochs.
+    Each take is a REAL export (torch load + ONNX conversion, minutes on
+    CPU) followed by the same say subprocess the voices screen uses; the
+    take models land in work/preview/audition/<id>/ so out/ only ever
+    holds deliberately exported voices."""
+    tier = _tier(project, params)
+    limit = max(1, min(int(params.get("limit", 3)), 5))
+    text = str(params.get("text") or say_mod.DEFAULT_TEXT).strip()
+    if not text:
+        raise RuntimeError("audition text is empty")
+    if len(text) > say_mod.MAX_TEXT:
+        raise RuntimeError(
+            f"audition text too long (max {say_mod.MAX_TEXT} characters)")
+
+    # Explicit checkpoint list (absolute or project-relative, the same
+    # convention _export accepts) or the default: the last N saved.
+    wanted: list[Path] = []
+    for c in (params.get("checkpoints") or []):
+        p = Path(c)
+        if not p.is_absolute():
+            p = project.root / p
+        if not p.is_file():
+            raise RuntimeError(f"checkpoint not found: {c}")
+        wanted.append(p)
+    if not wanted:
+        wanted = _recent_checkpoints(project, tier, limit)
+        if not wanted:
+            raise RuntimeError(
+                f"no {tier} run checkpoints to audition — run a train job "
+                "first, or pass checkpoints explicitly")
+    wanted = wanted[:limit]
+
+    pdir = _preview_dir(project, params, "audition")
+    emit("TARGET", {"total": len(wanted), "unit": "take"})
+    print(f"audition: {len(wanted)} checkpoint(s), one held-out sentence "
+          f"through each (each take runs a real ONNX export — this takes "
+          f"minutes)", flush=True)
+
+    takes = []
+    for i, ckpt in enumerate(wanted, start=1):
+        # Lightning names checkpoints epoch=N-step=M; the filename is the
+        # torch-free epoch source (same parse export.py uses for
+        # provenance). last.ckpt carries no epoch -> plain take number.
+        m = re.search(r"epoch=(\d+)", ckpt.name)
+        epoch = int(m.group(1)) if m else None
+        stem = f"take{i}-e{epoch}" if epoch is not None else f"take{i}"
+        print(f"take {i}/{len(wanted)}: exporting {ckpt.name} -> "
+              f"{stem}.onnx", flush=True)
+        onnx_path, json_path = export_mod.export(
+            project, tier, ckpt, voice_name=stem, out_dir=pdir)
+        wav_path = pdir / f"{stem}.wav"
+        wav_path.write_bytes(say_mod.synthesize(onnx_path, json_path, text))
+        emit("PROGRESS", {"current": i, "total": len(wanted), "unit": "take"})
+        takes.append({
+            "take": i,
+            "stem": stem,
+            "checkpoint": str(ckpt.relative_to(project.root))
+            if ckpt.is_relative_to(project.root) else str(ckpt),
+            "epoch": epoch,
+            "wav": wav_path.name,
+        })
+        print(f"take {i}/{len(wanted)}: synthesized {wav_path.name}",
+              flush=True)
+
+    return _write_preview(pdir, "audition", params,
+                          {"text": text, "tier": tier, "takes": takes})
+
+
 def _preview(project: Project, params: dict, emit) -> dict:
     stage = params.get("stage")
     if stage == "segment":
@@ -807,9 +893,11 @@ def _preview(project: Project, params: dict, emit) -> dict:
         return _preview_denoise(project, params, emit)
     if stage == "train":
         return _preview_train(project, params, emit)
+    if stage == "audition":
+        return _preview_audition(project, params, emit)
     raise RuntimeError(f"unknown preview stage {stage!r} "
-                       "(segment, segment-all, denoise and train ship "
-                       "today; finalize, transcribe and audition later)")
+                       "(segment, segment-all, denoise, train and audition "
+                       "ship today; finalize and transcribe later)")
 
 
 HANDLERS = {

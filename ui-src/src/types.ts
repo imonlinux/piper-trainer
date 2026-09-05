@@ -220,3 +220,22 @@ export interface VoiceInfo {
   inference: Record<string, number>;
   problems: string[];
 }
+
+// §2.3 audition: one held-out sentence through N checkpoints, A/B/C.
+// `dir` is the preview dir relative to the project root; each wav plays
+// through /files/ (the playback whitelist, not a second truth).
+export interface AuditionTake {
+  take: number;
+  stem: string;
+  checkpoint: string;
+  epoch: number | null;
+  wav: string;
+}
+
+export interface AuditionPreview {
+  id: string;
+  stage: string;
+  dir: string;
+  params: Record<string, unknown>;
+  result: { text: string; tier: string; takes: AuditionTake[] };
+}

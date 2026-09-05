@@ -26,11 +26,18 @@ def export(project: Project, tier: str, checkpoint: Path,
            espeak_voice: str = "en-us",
            length_scale: float | None = None,
            noise_scale: float | None = None,
-           noise_w: float | None = None) -> tuple[Path, Path]:
+           noise_w: float | None = None,
+           out_dir: Path | None = None) -> tuple[Path, Path]:
+    # out_dir: where the .onnx/.onnx.json pair lands (default out/). The
+    # audition preview (§2.3) exports take models into work/preview/ so a
+    # throwaway comparison never shows up as an exported voice. The
+    # training config is ALWAYS read from out/ — that is where the train
+    # run wrote it (--data.config_path), wherever the pair itself goes.
+    dest = out_dir if out_dir is not None else project.out
     stem = voice_name or voice_stem(project.name, tier, espeak_voice)
-    project.out.mkdir(parents=True, exist_ok=True)
-    onnx_path = project.out / f"{stem}.onnx"
-    json_path = project.out / f"{stem}.onnx.json"
+    dest.mkdir(parents=True, exist_ok=True)
+    onnx_path = dest / f"{stem}.onnx"
+    json_path = dest / f"{stem}.onnx.json"
 
     cmd = [sys.executable, "-m", "piper.train.export_onnx",
            "--checkpoint", str(checkpoint),

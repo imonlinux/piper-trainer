@@ -223,7 +223,8 @@ def test_denoise_preview_caps_seconds(tmp_path, segment_stubs):
 # ------------------------------------------------------------------ errors
 
 def test_preview_unknown_stage(tmp_path):
-    jd, _ = make_job(tmp_path, {"stage": "audition"})
+    # audition ships now (§2.3); finalize is the next unshipped stage
+    jd, _ = make_job(tmp_path, {"stage": "finalize"})
     with pytest.raises(RuntimeError, match="unknown preview stage"):
         runner.execute(jd)
 

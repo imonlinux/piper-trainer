@@ -1,11 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, get, patch, post, postWav } from "../api";
-import type { Checkpoint, ProjectDetail, VoiceInfo } from "../types";
+import { useJobStream } from "../hooks";
+import type {
+  AuditionPreview,
+  Checkpoint,
+  ProjectDetail,
+  VoiceInfo,
+} from "../types";
 
-// The Voices screen (§6.5): export a training checkpoint under a
-// governed name, tune inference with the three sliders that change how
-// a voice actually sounds, hear it instantly, download the pair.
-// Audition A/B/C over checkpoints builds on `say` and ships next.
+// The Voices screen (§6.5): audition checkpoints A/B/C with one held-out
+// sentence, export the winner under a governed name, tune inference with
+// the three sliders that change how a voice actually sounds, hear it
+// instantly, download the pair.
 
 const fmtMB = (b: number) => `${(b / 1e6).toFixed(0)} MB`;
 
@@ -152,6 +158,8 @@ export function VoicesPage({ name }: { name: string }) {
         </table>
       )}
 
+      <Audition name={name} ckpts={ckpts} />
+
       <h2>Export a checkpoint</h2>
       <form onSubmit={(e) => { e.preventDefault(); void doExport(); }}>
         <div className="row">
@@ -193,6 +201,154 @@ export function VoicesPage({ name }: { name: string }) {
           voice={selected}
           onTouched={() => void reload()}
         />
+      )}
+    </>
+  );
+}
+
+// §2.3 audition: the only cheap answer to "are more epochs helping?".
+// One held-out sentence through each of the newest checkpoints (or a
+// hand-picked set), rendered A/B/C. Each take is a real ONNX export, so
+// the job takes minutes — the copy says so before the button does it.
+const AUDITION_TEXT = "Testing one two three. This is how the voice sounds today.";
+
+function Audition({ name, ckpts }: { name: string; ckpts: Checkpoint[] }) {
+  const runs = useMemo(
+    () =>
+      ckpts
+        .filter((c) => c.source === "run" && c.path)
+        .sort((a, b) => (b.mtime ?? "").localeCompare(a.mtime ?? "")),
+    [ckpts],
+  );
+
+  const [audSel, setAudSel] = useState<string[]>([]);
+  const seeded = useRef(false);
+  useEffect(() => {
+    // pre-check the newest three once the checkpoint list lands
+    if (!seeded.current && runs.length > 0) {
+      seeded.current = true;
+      setAudSel(runs.slice(0, 3).map((c) => c.path as string));
+    }
+  }, [runs]);
+
+  const [audText, setAudText] = useState(AUDITION_TEXT);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [audErr, setAudErr] = useState("");
+  const [aud, setAud] = useState<AuditionPreview | null>(null);
+  const { job } = useJobStream(jobId);
+
+  useEffect(() => {
+    // newest audition envelope: on page load, and again each time a run
+    // changes state, so the players survive a page navigation
+    if (jobId && job?.state !== "succeeded" && job?.state !== "failed") return;
+    get<AuditionPreview[]>(`/projects/${name}/previews`)
+      .then((ps) => {
+        const a = ps.find((p) => p.stage === "audition");
+        if (a) setAud(a);
+      })
+      .catch(() => undefined);
+  }, [name, jobId, job?.state]);
+
+  function toggle(path: string) {
+    setAudSel((cur) =>
+      cur.includes(path) ? cur.filter((p) => p !== path) : [...cur, path],
+    );
+  }
+
+  async function doAudition() {
+    setAudErr("");
+    const params: Record<string, unknown> = {};
+    if (audText.trim()) params.text = audText.trim();
+    if (audSel.length > 0) params.checkpoints = audSel;
+    try {
+      const j = await post<{ id: string }>(`/projects/${name}/preview`, {
+        stage: "audition",
+        params,
+      });
+      setJobId(j.id);
+    } catch (err) {
+      setAudErr(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <>
+      <h2>Audition</h2>
+      <p className="muted">
+        the same held-out sentence through each checkpoint — if the newest
+        take is not clearly better than the one before it, the run has
+        plateaued and the effort belongs in more audio, not more epochs.
+        each take runs a real ONNX export: minutes per checkpoint.
+      </p>
+      {runs.length === 0 ? (
+        <p className="muted">no run checkpoints yet — train first</p>
+      ) : (
+        <div
+          style={{
+            maxHeight: "10em",
+            overflowY: "auto",
+            border: "1px solid #ccc",
+            padding: "0.4em",
+          }}
+        >
+          {runs.map((c) => (
+            <div key={c.path}>
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={audSel.includes(c.path as string)}
+                  onChange={() => toggle(c.path as string)}
+                />{" "}
+                {c.tier} · {c.name}
+              </label>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="row">
+        <input
+          value={audText}
+          onChange={(e) => setAudText(e.target.value)}
+          style={{ width: "34em" }}
+          placeholder="held-out sentence (not from the training set)"
+        />
+        <button
+          onClick={() => void doAudition()}
+          disabled={runs.length === 0 || audText.trim().length === 0}
+        >
+          audition {audSel.length > 0 ? `${audSel.length} checkpoints` : "latest 3"}
+        </button>
+      </div>
+      {jobId && (
+        <p className="muted">
+          audition job {jobId}: {job?.state ?? "queued"}
+          {job?.state === "running" ? " — exporting takes, minutes each…" : ""}
+          {" · "}
+          <a href={`#/project/${name}`}>watch the log</a>
+        </p>
+      )}
+      {job?.state === "failed" && (
+        <p className="error">audition failed: {job?.error ?? "unknown error"}</p>
+      )}
+      {audErr && <p className="error">{audErr}</p>}
+      {aud && (
+        <>
+          <p className="muted">
+            preview {aud.id} — “{aud.result.text}”
+          </p>
+          {aud.result.takes.map((t) => (
+            <div className="row" key={t.stem}>
+              <span style={{ minWidth: "18em", display: "inline-block" }}>
+                take {t.take} · {t.checkpoint.split("/").pop()}
+              </span>
+              <audio
+                controls
+                preload="none"
+                src={`/api/projects/${name}/files/${aud.dir}/${t.wav}`}
+              />
+            </div>
+          ))}
+        </>
       )}
     </>
   );

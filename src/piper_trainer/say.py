@@ -21,6 +21,11 @@ from pathlib import Path
 MAX_TEXT = 1000
 DEFAULT_TIMEOUT = 120.0
 
+# §2.3: the audition's fixed sentence, deliberately NOT from any training
+# set — resemblance to the training text is exactly what overfitting
+# flatters, so a held-out sentence is the honest measure of a checkpoint.
+DEFAULT_TEXT = "Testing one two three. This is how the voice sounds today."
+
 
 class SayError(RuntimeError):
     pass
