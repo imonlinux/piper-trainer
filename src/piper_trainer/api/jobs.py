@@ -159,10 +159,17 @@ class JobManager:
         """
         interrupted = []
         orphaned: set[str] = set()
+        # Projects this process reserved through its own submits. A job here
+        # is mid-supervise (pid may not be recorded yet — it is written after
+        # the spawn await), so rescan must never reap it; only orphan
+        # reservations (_busy_orphans) are rescan's to manage.
+        own = self._busy - self._busy_orphans
         for jd in self.iter_job_dirs():
             self._index[jd.name] = jd
             job = _read_job(jd)
             if job.get("state") != "running":
+                continue
+            if jd.parent.parent.name in own:
                 continue
             if self._pid_alive(job.get("pid")):
                 orphaned.add(jd.parent.parent.name)

@@ -121,3 +121,75 @@ def test_tail_survives_missing_file(tmp_path):
     tail.join(timeout=5)
     assert said == []
     assert not tail.is_alive()
+
+
+def test_tail_survives_header_rewrite_midrun(tmp_path):
+    """Lightning rewrites metrics.csv with a new header the first time a
+    val column appears. A byte cursor would point mid-file afterwards (the
+    val point lost, later epochs replaying stale rows); re-reading whole
+    must emit the val point and keep epochs moving forward, once each."""
+    vdir = tmp_path / "lightning_logs" / "version_0"
+    vdir.mkdir(parents=True)
+    csv_path = vdir / "metrics.csv"
+
+    said: list[str] = []
+    stop = threading.Event()
+    tail = threading.Thread(
+        target=tail_metrics, args=(tmp_path, stop, said.append, 0.01),
+        daemon=True)
+    tail.start()
+
+    # phase 1: train-only header, two epochs
+    feed(csv_path, [
+        ["epoch", "step", "loss_g"],
+        ["0", "10", "2.9"],
+        ["1", "20", "2.75"],
+    ])
+    assert wait_for(
+        lambda: "Epoch 0: training_loss=2.9000" in said)
+
+    # phase 2: the rewrite — whole file replaced, val columns appear,
+    # an old val point lands AND training continues past the old end
+    csv_path.write_text(
+        "epoch,step,loss_g,loss_d,val_loss\n"
+        "0,10,2.9,0.8,\n"
+        "1,20,2.75,0.7,2.5301\n"
+        "2,30,2.6,0.7,\n")
+
+    assert wait_for(lambda: "Epoch 1: validation_loss=2.5301" in said
+                    and "Epoch 1: training_loss=2.7500" in said)
+    # epoch 2 stays open (newest) until the final drain flushes it
+    stop.set()
+    tail.join(timeout=5)
+    # epoch 0 emitted exactly once despite the re-read, no regressions
+    assert said.count("Epoch 0: training_loss=2.9000") == 1
+    assert said.count("Epoch 1: training_loss=2.7500") == 1
+    assert sorted(said) == sorted([
+        "Epoch 0: training_loss=2.9000",
+        "Epoch 1: training_loss=2.7500",
+        "Epoch 1: validation_loss=2.5301",
+        "Epoch 2: training_loss=2.6000",
+    ])
+
+
+def test_version_no_reads_only_the_version_dir_name(tmp_path):
+    """A project named version_9 must not outrank real version dirs: the
+    counter lives in metrics.csv's parent directory name alone. With equal
+    mtimes a full-path search ties both files at 9 and the stale v0 wins
+    the max; the parent-name rule breaks the tie on the real counter."""
+    import os
+
+    from piper_trainer.metrics import _version_no
+
+    runs = tmp_path / "version_9" / "runs-medium"
+    stale = runs / "lightning_logs" / "version_0" / "metrics.csv"
+    current = runs / "lightning_logs" / "version_2" / "metrics.csv"
+    stale.parent.mkdir(parents=True)
+    current.parent.mkdir(parents=True)
+    stale.write_text("epoch,step\n41,10\n")
+    current.write_text("epoch,step\n41,20\n")
+    os.utime(stale, (1000, 1000))
+    os.utime(current, (1000, 1000))  # identical mtimes: version must decide
+
+    assert _version_no(current) == 2  # not 9 from the project name
+    assert newest_metrics(runs, since_ts=0) == current

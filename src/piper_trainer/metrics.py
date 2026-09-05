@@ -20,6 +20,7 @@ dashed curves share a scale.
 from __future__ import annotations
 
 import csv
+import io
 import re
 import threading
 import time
@@ -52,7 +53,10 @@ def newest_metrics(runs_dir: Path, since_ts: float) -> Path | None:
 
 
 def _version_no(p: Path) -> int:
-    m = re.search(r"version_(\d+)", str(p))
+    # The version component only counts where it actually is — the csv's
+    # parent dir. A full-path search lets a project named "version_9"
+    # outrank every real version dir.
+    m = re.fullmatch(r"version_(\d+)", p.parent.name)
     return int(m.group(1)) if m else -1
 
 
@@ -77,48 +81,16 @@ def _as_int(value: str | None) -> int | None:
 def tail_metrics(runs_dir: Path, stop: threading.Event, say,
                  poll: float = POLL_SECONDS) -> None:
     """Follow the run's metrics.csv until `stop` is set, printing one
-    training_loss line per epoch (on epoch change or final drain) and one
-    validation_loss line per check epoch. Tolerates the file not existing
-    yet (or ever, for a run that dies before the first step)."""
+    training_loss line per epoch (when the epoch closes or on final drain)
+    and one validation_loss line per check epoch. Tolerates the file not
+    existing yet (or ever, for a run that dies before the first step)."""
     started = time.time()
     path: Path | None = None
-    offset = 0
-    header: list[str] | None = None
+    said_train: set[int] = set()
     said_val: set[int] = set()
-    open_epoch: int | None = None
-    open_loss: float | None = None
 
-    def say_loss(epoch: int, loss: float) -> None:
-        say(f"Epoch {epoch}: training_loss={loss:.4f}")
-
-    def flush_open() -> None:
-        nonlocal open_epoch, open_loss
-        if open_epoch is not None and open_loss is not None:
-            say_loss(open_epoch, open_loss)
-        open_epoch, open_loss = None, None
-
-    def handle(row: list[str]) -> None:
-        nonlocal header, open_epoch, open_loss
-        if header is None:
-            if row and row[0].strip() == "epoch":
-                header = row
-            return  # rows before the header (or a stray blank) are noise
-        rec = dict(zip(header, row))
-        epoch = _as_int(rec.get("epoch"))
-        if epoch is None:
-            return
-        loss_g = _as_float(rec.get("loss_g"))
-        if loss_g is not None:
-            if open_epoch is not None and epoch != open_epoch:
-                flush_open()
-            open_epoch, open_loss = epoch, loss_g
-        val_loss = _as_float(rec.get("val_loss"))
-        if val_loss is not None and epoch not in said_val:
-            said_val.add(epoch)
-            say(f"Epoch {epoch}: validation_loss={val_loss:.4f}")
-
-    def drain() -> bool:
-        nonlocal path, offset, header
+    def scan(final: bool) -> bool:
+        nonlocal path
         # Re-resolve every poll, but only ever switch to a STRICTLY HIGHER
         # version: the epsilon window can admit a previous run's file when
         # the tail starts before this run's csv exists, and version_N
@@ -128,37 +100,53 @@ def tail_metrics(runs_dir: Path, stop: threading.Event, say,
         if best is not None and (path is None
                                  or _version_no(best) > _version_no(path)):
             path = best
-            offset = 0
-            header = None
         if path is None:
             return False
         try:
-            size = path.stat().st_size
+            text = path.read_text()
         except OSError:
             return False
-        if size <= offset:
-            return False
-        with path.open("r", newline="") as f:
-            f.seek(offset)
-            chunk = f.read()
-        # Never consume a partial line: the writer may be mid-flush, and
-        # rows are only re-readable from the recorded offset.
-        cut = chunk.rfind("\n")
-        if cut == -1:
-            return False
-        offset += cut + 1
-        for line in chunk[: cut + 1].splitlines():
-            if line.strip():
-                handle(next(csv.reader([line])))
+        # Re-read the whole file every poll and dedupe emissions by epoch.
+        # A byte cursor breaks here: Lightning rewrites metrics.csv with a
+        # new header the first time a val column appears, which leaves any
+        # recorded offset pointing mid-file — the val point is lost and
+        # later epochs replay from stale rows. Re-reading is stateless
+        # against any rewrite; the said-sets keep output idempotent.
+        rows = csv.DictReader(io.StringIO(text))
+        per_epoch: dict[int, float] = {}
+        vals: dict[int, float] = {}
+        for rec in rows:
+            epoch = _as_int(rec.get("epoch"))
+            if epoch is None:
+                continue
+            loss_g = _as_float(rec.get("loss_g"))
+            if loss_g is not None:
+                per_epoch[epoch] = loss_g     # the epoch's last row wins
+            val_loss = _as_float(rec.get("val_loss"))
+            if val_loss is not None:
+                vals[epoch] = val_loss
+        # An epoch's training line is only final once a later epoch exists
+        # — the newest stays open until the next poll closes it, or the
+        # run ends and this final pass flushes it.
+        epochs = sorted(per_epoch)
+        closed = epochs if final else epochs[:-1]
+        for epoch in closed:
+            if epoch not in said_train:
+                said_train.add(epoch)
+                say(f"Epoch {epoch}: training_loss={per_epoch[epoch]:.4f}")
+        for epoch in sorted(vals):
+            if epoch not in said_val:
+                said_val.add(epoch)
+                say(f"Epoch {epoch}: validation_loss={vals[epoch]:.4f}")
         return True
 
     # The stop event doubles as the end-of-run signal: the runner sets it
     # once the subprocess exits, and this final pass catches rows written
     # between the last poll and exit, including the last epoch's line.
     while True:
-        progressed = drain()
+        scan(final=False)
         if stop.is_set():
-            flush_open()
+            scan(final=True)
             return
-        if not progressed:
-            time.sleep(poll)
+        time.sleep(poll)
+

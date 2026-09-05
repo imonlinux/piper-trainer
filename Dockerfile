@@ -185,6 +185,16 @@ RUN python3 -m pip install \
         "websockets>=12" \
         "python-multipart>=0.0.9"
 
+# ---------------------------------------------------- ingest source backends
+# §2.5.5: media-site (yt-dlp) and hf-dataset (huggingface_hub) ingest guard
+# on ImportError and degrade to a runtime error — which in a built image
+# means the feature is a dead end nobody notices until the button fails.
+# Ship both, pinned loosely; the smoke test below turns absence into a
+# failed build instead of a broken button.
+RUN python3 -m pip install \
+        "yt-dlp>=2025.6.9" \
+        "huggingface_hub>=0.20,<2"
+
 EXPOSE 8000
 
 # --------------------------------------------------------- piper-trainer CLI
@@ -237,6 +247,8 @@ VOLUME ["/workspace"]
 RUN python3 -c "from piper import espeakbridge" \
     && python3 -c "from piper.train.vits.monotonic_align.monotonic_align.core import maximum_path_c" \
     && python3 -c "import torch, auditok, faster_whisper, lightning, onnxscript" \
+    && python3 -c "import yt_dlp, huggingface_hub" \
+    && yt-dlp --version \
     && python3 -c "import piper.train.__main__" \
     && python3 -c "import piper_trainer.api.app" \
     && test -f /opt/piper-trainer/src/piper_trainer/ui/index.html \

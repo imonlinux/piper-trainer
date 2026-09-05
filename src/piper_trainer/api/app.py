@@ -10,8 +10,10 @@ design doc §7.)
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -33,6 +35,7 @@ from .jobs import JobError, JobManager
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 UI_DIR = Path(__file__).resolve().parents[1] / "ui"
+RESCAN_INTERVAL = 10.0  # seconds between orphan reconciles (test seam)
 
 
 class ProjectCreate(BaseModel):
@@ -95,7 +98,24 @@ def create_app(workspace: Path | None = None,
         manager.rescan()
         app.state.manager = manager
         app.state.workspace = ws_root
+
+        # Startup rescan alone only catches orphans that died before the
+        # server came up. A runner outliving the manager whose pid dies
+        # LATER would hold its project reservation (and a stale "running"
+        # record) forever — so reconcile on a slow tick. rescan() skips
+        # projects this process is supervising itself.
+        async def rescan_loop():
+            while True:
+                await asyncio.sleep(RESCAN_INTERVAL)
+                try:
+                    manager.rescan()
+                except Exception:  # noqa: BLE001 — one bad read must not
+                    logging.getLogger("uvicorn.error").exception(
+                        "periodic rescan failed")
+
+        rescan_task = asyncio.create_task(rescan_loop())
         yield
+        rescan_task.cancel()
         for t in list(manager._tasks):
             t.cancel()
 
@@ -535,11 +555,18 @@ def create_app(workspace: Path | None = None,
                 epoch_now = (train_mod.checkpoint_epoch(ck) if ck else None)
             except Exception:  # noqa: BLE001 — torch may be absent
                 pass
-            if epoch_now:
-                out["seconds_per_epoch"] = round(wall / epoch_now, 1)
-                out["projected_seconds"] = round(wall / epoch_now * epochs)
-                out["basis"] = (f"last run took {wall / 3600:.1f} h "
-                                f"to reach epoch {epoch_now}")
+            # The wall clock covers only the epochs THAT run trained. A
+            # resumed run ("N more") starts at the checkpoint's counter, so
+            # dividing by the absolute epoch number would under-project by
+            # that factor; divide by the epochs the run actually did.
+            start_epoch = (last.get("result") or {}).get("start_epoch") or 0
+            epochs_run = (epoch_now - start_epoch) if epoch_now else None
+            if epochs_run:
+                out["seconds_per_epoch"] = round(wall / epochs_run, 1)
+                out["projected_seconds"] = round(wall / epochs_run * epochs)
+                out["basis"] = (f"last run took {wall / 3600:.1f} h for "
+                                f"{epochs_run} epochs "
+                                f"(epoch {start_epoch} -> {epoch_now})")
         else:
             # Next-best basis when nothing full has run yet: a measured
             # train preview (§2.2) — a real ~50-step burst on this machine

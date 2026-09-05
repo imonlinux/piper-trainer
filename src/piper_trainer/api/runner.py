@@ -271,7 +271,12 @@ def _train(project: Project, params: dict, emit) -> dict:
     if code != 0:
         raise RuntimeError(f"training exited with code {code}")
     latest = train_mod.latest_checkpoint(project, tier)
+    # start_epoch: where THIS run began counting. A resumed run ("N more")
+    # starts at the checkpoint's epoch, so wall-clock math that divides by
+    # the absolute counter instead of the epochs this run actually trained
+    # would under-project the finish line by that factor.
     return {"tier": tier, "max_epochs": max_epochs,
+            "start_epoch": ckpt_epoch or 0,
             "checkpoint": str(latest) if latest else None}
 
 

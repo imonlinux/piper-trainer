@@ -109,13 +109,19 @@ def media_site_cmd(url: str, dest: Path, sections: str | None = None,
     weight and prepare normalizes anyway, so no format negotiation exists.
     Playlists need the explicit opt-in flag or --no-playlist pins the
     download to one video."""
+    scheme = urlsplit(url).scheme
+    if scheme not in ("http", "https"):
+        raise RuntimeError(f"unsupported url scheme {scheme!r} (http/https only)")
     cmd = ["yt-dlp", "-x", "--audio-format", "wav",
            "-o", str(dest / "%(title)s.%(ext)s")]
     if not playlist:
         cmd.append("--no-playlist")
     if sections:
-        cmd += ["--download-sections", sections]
-    cmd.append(url)
+        cmd += ["--download-sections", str(sections)]
+    # -- ends option parsing: yt-dlp uses optparse, so a URL whose text
+    # starts with "-" would otherwise be read as flags (--exec=... runs
+    # a shell command on the downloaded file).
+    cmd += ["--", url]
     return cmd
 
 

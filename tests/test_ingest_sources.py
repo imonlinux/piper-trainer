@@ -68,12 +68,26 @@ def test_media_site_cmd_basics():
     assert cmd[0] == "yt-dlp"
     assert "-x" in cmd and cmd[cmd.index("--audio-format") + 1] == "wav"
     assert "--no-playlist" in cmd
-    assert cmd[-1] == "https://v.example/watch/1"
+    # -- ends option parsing, url is the only thing after it
+    assert cmd[-2:] == ["--", "https://v.example/watch/1"]
     # playlist is opt-in; sections pass through verbatim
-    pl = ingest_mod.media_site_cmd("u", dest, playlist=True)
+    pl = ingest_mod.media_site_cmd("https://v.example/watch/1", dest,
+                                   playlist=True)
     assert "--no-playlist" not in pl
-    sec = ingest_mod.media_site_cmd("u", dest, sections="*:10-20")
+    sec = ingest_mod.media_site_cmd("https://v.example/watch/1", dest,
+                                    sections="*:10-20")
     assert sec[sec.index("--download-sections") + 1] == "*:10-20"
+
+
+def test_media_site_cmd_refuses_bad_urls():
+    dest = Path("/tmp/x")
+    # http/https only — no file:, no bare junk
+    for url in ("u", "file:///etc/passwd", "", "ftp://h/x"):
+        with pytest.raises(RuntimeError, match="unsupported url scheme"):
+            ingest_mod.media_site_cmd(url, dest)
+    # an option-looking URL must land after -- so yt-dlp reads it as text
+    sneaky = ingest_mod.media_site_cmd("https://v.example/-o+--exec=touch", dest)
+    assert sneaky[sneaky.index("--") + 1] == "https://v.example/-o+--exec=touch"
 
 
 def test_url_filename_precedence():
@@ -268,4 +282,41 @@ def test_train_preview_projection_from_history(tmp_path):
     body = r.json()
     assert body["seconds_per_epoch"] == 1800.0  # 7200 s wall / 4 epochs
     assert body["projected_seconds"] == 180000
-    assert "epoch 4" in body["basis"]
+    assert "epoch 0 -> 4" in body["basis"]  # no start_epoch recorded: 0
+
+
+def test_train_preview_projection_counts_resume_epochs(tmp_path):
+    """A resumed run's wall clock covers only the epochs IT trained. A
+    job whose start_epoch is 40 ending at epoch 44 ran 4 epochs, not 44 —
+    dividing by the absolute counter under-projected 11x."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "project.json").write_text(json.dumps({"name": "proj"}))
+    (root / "dataset").mkdir()
+    (root / "dataset" / "metadata.csv").write_text("a.wav|one\n")
+    ck = root / "runs-medium" / "lightning_logs" / "version_1" / \
+        "checkpoints" / "epoch=44.ckpt"
+    ck.parent.mkdir(parents=True)
+    ck.write_bytes(b"x")
+
+    import asyncio
+
+    import piper_trainer.train as train_mod
+    with make_client(tmp_path) as client, \
+         mock.patch.object(train_mod, "latest_checkpoint", lambda p, t: ck), \
+         mock.patch.object(train_mod, "checkpoint_epoch", lambda path: 44):
+        job = asyncio.run(client.app.state.manager.submit(
+            root, "train", run=False))
+        jd = client.app.state.manager.job_dir(job["id"])
+        _write_job(jd, state="succeeded",
+                   started_at="2026-09-01T10:00:00Z",
+                   finished_at="2026-09-01T12:00:00Z",
+                   result={"tier": "medium", "max_epochs": 44,
+                           "start_epoch": 40, "checkpoint": "x"})
+        r = client.get("/api/projects/proj/train/preview",
+                       params={"epochs": 100})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["seconds_per_epoch"] == 1800.0  # 7200 s wall / 4 trained
+    assert body["projected_seconds"] == 180000
+    assert "epoch 40 -> 44" in body["basis"]

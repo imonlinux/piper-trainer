@@ -4,12 +4,15 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import subprocess
 import sys
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from piper_trainer import doctor, prepare
+from piper_trainer.api import app as app_mod
 from piper_trainer.api import catalog
 from piper_trainer.api.app import create_app
 
@@ -463,3 +466,45 @@ def test_preview_submit_rejects_unknown_stage(client):
     job = client.get(f"/api/jobs/{r.json()['id']}").json()
     assert job["kind"] == "preview"
     assert job["params"]["stage"] == "nope"
+
+
+def test_periodic_rescan_releases_dead_orphan(tmp_path, monkeypatch):
+    """Review finding 1.2 (layer 2): startup rescan only catches orphans
+    that died before the server came up. The lifespan rescan loop must
+    reap a runner whose pid dies LATER — flipping the stale "running"
+    record and releasing the project reservation a queued job waits on."""
+    monkeypatch.setattr(app_mod, "RESCAN_INTERVAL", 0.05)
+    app = create_app(tmp_path)
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "project.json").write_text(json.dumps({"name": "proj"}))
+    orphan = subprocess.Popen(["sleep", "30"])
+    jd = root / "jobs" / "20260901T000000Z-train-orphan"
+    jd.mkdir(parents=True)
+    (jd / "job.json").write_text(json.dumps({
+        "id": jd.name, "kind": "train", "project": "proj", "params": {},
+        "state": "running", "pid": orphan.pid}))
+    (jd / "log.txt").touch()
+
+    try:
+        with TestClient(app) as client:
+            # reservation held while the pid lives
+            assert client.get(f"/api/jobs/{jd.name}").json()["state"] == "running"
+
+            orphan.terminate()
+            orphan.wait()
+            # no explicit rescan call here — the loop must do the work
+            deadline = time.time() + 5
+            job = {"state": "running"}
+            while time.time() < deadline:
+                job = client.get(f"/api/jobs/{jd.name}").json()
+                if job["state"] == "failed":
+                    break
+                time.sleep(0.05)
+            assert job["state"] == "failed"
+            assert job["error"] == "interrupted"
+    finally:
+        if orphan.poll() is None:
+            orphan.kill()
+            orphan.wait()

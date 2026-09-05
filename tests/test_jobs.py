@@ -514,3 +514,33 @@ async def test_list_newest_first(tmp_path):
         (jd / "log.txt").touch()
     ids = [j["id"] for j in JobManager(tmp_path).list_for_project(root)]
     assert ids == list(reversed(names))
+
+
+async def test_rescan_never_reaps_its_own_midspawn_job(tmp_path):
+    """Review finding 1.2 follow-up: with a periodic rescan ticking every
+    few seconds, a job this manager just started (state written, pid not
+    yet — the pid lands after the spawn await) looks exactly like a dead
+    orphan. Own reservations (_busy without _busy_orphans) are rescan's
+    to leave alone; only orphan reservations get reconciled."""
+    mgr = JobManager(tmp_path, cancel_grace=1.0, runner_cmd=slow_runner)
+    root = make_project(tmp_path)
+    jd = root / "jobs" / "20260901T000000Z-train-midspawn"
+    jd.mkdir(parents=True)
+    (jd / "job.json").write_text(json.dumps({
+        "id": jd.name, "kind": "train", "project": "proj",
+        "params": {}, "state": "running", "pid": None}))
+    (jd / "log.txt").touch()
+
+    # the window between _pump's reservation and the pid write
+    mgr._busy.add("proj")
+    assert mgr.rescan() == []
+    job = mgr.get(jd.name)
+    assert job["state"] == "running"          # not reaped
+    assert mgr._busy == {"proj"}              # reservation intact
+
+    # the same record under an ORPHAN reservation is still reaped —
+    # the guard protects own jobs only
+    mgr._busy_orphans.add("proj")
+    assert mgr.rescan() == [jd.name]
+    assert mgr.get(jd.name)["state"] == "failed"
+    assert mgr.get(jd.name)["error"] == "interrupted"
