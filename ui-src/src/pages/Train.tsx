@@ -50,6 +50,15 @@ function warmstartPath(sel: string, ckpts: Checkpoint[]): string | null {
   return c.path ?? null;
 }
 
+// Mirror of the server's fetch-checkpoint rule (runner._fetch_checkpoint):
+// family/locale/voice/quality, safe charset, no "." or ".." segment.
+const CATALOG_PATH_RE = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+){3}$/;
+
+export function validCatalogPath(p: string): boolean {
+  return CATALOG_PATH_RE.test(p) &&
+    !p.split("/").some((s) => s === "." || s === "..");
+}
+
 export function TrainPage({ name }: { name: string }) {
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [ckpts, setCkpts] = useState<Checkpoint[]>([]);
@@ -64,6 +73,8 @@ export function TrainPage({ name }: { name: string }) {
   const [message, setMessage] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
   const [measureId, setMeasureId] = useState<string | null>(null);
+  const [fetchId, setFetchId] = useState<string | null>(null);
+  const [fetchPath, setFetchPath] = useState("");
   const [measuredAt, setMeasuredAt] = useState(0);
   const [fullLog, setFullLog] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -78,6 +89,12 @@ export function TrainPage({ name }: { name: string }) {
   const measuring =
     mstream.job !== null &&
     (mstream.job.state === "running" || mstream.job.state === "queued");
+  // fetch-checkpoint: the job that populates base_checkpoints/ and the
+  // picker's "fetched (catalog)" group.
+  const fstream = useJobStream(fetchId);
+  const fetching =
+    fstream.job !== null &&
+    (fstream.job.state === "running" || fstream.job.state === "queued");
 
   // Keep the raw log pinned to the bottom as lines land (same contract
   // as the Project page's stream — this page is now a watch surface too).
@@ -97,13 +114,18 @@ export function TrainPage({ name }: { name: string }) {
         if (!alive) return;
         setDetail(d);
         setCkpts(cks);
+        setFetchPath(d.config.catalog_path ?? "");
         // "continue" is the natural default once a run exists; with a
-        // fetched catalog voice the page opens on warmstart; with neither,
-        // scratch is the only actionable mode (a warmstart needs a base).
+        // catalog voice — fetched or merely chosen at creation — the page
+        // opens on warmstart, where the fetch row lives. (Defaulting a
+        // chosen-but-unfetched voice to scratch once produced a 4000-epoch
+        // from-nothing run; never again.)
         const hasRun = cks.some((c) => c.source === "run");
         if (!hasRun) {
           setMode(
-            cks.some((c) => c.source === "catalog") ? "warm" : "scratch",
+            cks.some((c) => c.source === "catalog") || d.config.catalog_path
+              ? "warm"
+              : "scratch",
           );
         }
         // resume hint: continue from where the last run stopped
@@ -187,6 +209,29 @@ export function TrainPage({ name }: { name: string }) {
     if (mstream.job?.state === "succeeded") setMeasuredAt(Date.now());
   }, [mstream.job?.state]);
 
+  // A finished fetch-checkpoint refreshes the picker and selects what
+  // arrived, so the next click is "train", not "find the new entry".
+  useEffect(() => {
+    const st = fstream.job?.state;
+    if (st === "succeeded") {
+      get<Checkpoint[]>(`/projects/${name}/checkpoints`)
+        .then((cks) => {
+          setCkpts(cks);
+          const p = fetchPath.trim();
+          if (p && cks.some((c) => c.catalog_path === p)) {
+            setWarmSel(`c:${p}`);
+          }
+        })
+        .catch(() => undefined);
+      setMessage(`base voice fetched — selected in the picker`);
+      setFetchId(null);
+    } else if (st === "failed") {
+      setError(`fetch failed: ${fstream.job?.error ?? "see its log"}`);
+      setFetchId(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fstream.job?.state]);
+
   // ------------------------------------------------------------ derived
   const runCkpts = ckpts.filter((c) => c.source === "run");
   const catCkpts = ckpts.filter((c) => c.source === "catalog");
@@ -254,6 +299,25 @@ export function TrainPage({ name }: { name: string }) {
     if (!runId) return;
     try {
       await postEmpty(`/jobs/${runId}/cancel`);
+    } catch (ex) {
+      setError(String(ex));
+    }
+  }
+
+  // Populate base_checkpoints/ from the HF catalog (§3.5). The endpoint
+  // existed from the start; nothing in the UI called it, which is why the
+  // warmstart picker could be empty forever.
+  async function fetchBase(): Promise<void> {
+    setError("");
+    setMessage("");
+    const p = fetchPath.trim();
+    if (!validCatalogPath(p)) return;
+    try {
+      const j = await post<Job>(
+        `/projects/${name}/checkpoints/fetch`,
+        { catalog_path: p },
+      );
+      setFetchId(j.id);
     } catch (ex) {
       setError(String(ex));
     }
@@ -379,6 +443,41 @@ export function TrainPage({ name }: { name: string }) {
             <span className="muted">a warmstart needs a base checkpoint</span>
           )}
         </div>
+      )}
+      {mode === "warm" && (
+        <>
+          <div className="row">
+            <input
+              value={fetchPath}
+              onChange={(e) => setFetchPath(e.target.value)}
+              placeholder="family/locale/voice/quality"
+              aria-label="catalog checkpoint path"
+              spellCheck={false}
+              style={{ width: "24em" }}
+            />
+            <button
+              disabled={
+                !validCatalogPath(fetchPath.trim()) || fetching || running ||
+                measuring
+              }
+              onClick={() => void fetchBase()}
+            >
+              fetch base voice
+            </button>
+            {fetching && fstream.job !== null && (
+              <span className="muted">
+                {fstream.job.state} · {progressText(fstream.job.progress)}
+              </span>
+            )}
+          </div>
+          {catCkpts.length === 0 && (
+            <p className="muted">
+              nothing fetched yet — paste the catalog path this project was
+              created with (prefilled above) and fetch it once; every
+              project reuses it after that
+            </p>
+          )}
+        </>
       )}
 
       <h2>Dials</h2>
