@@ -160,14 +160,14 @@ jobs are possible; the singular field shows the freshest one and
 
 ### The audit read set (important)
 
-The audit stage's `findings` come from `result` of the **newest of**:
-the last `validate` job, the last `clean` job, the last `train` job.
-These are the jobs that record `errors`/`warnings` counts. It is never
-recomputed at request time.
+Only `validate` results record `errors`/`warnings` counts (verified
+against the runner: `clean` returns moved/dropped/repaired **stats**,
+`restore` returns stats, `train` returns tier/epoch/checkpoint — none
+carry error counts). So the findings come from the `result` of the
+newest **succeeded `validate`** job, never recomputed at request time.
 
-When the newest of those is a `clean-apply` (which returns
-moved/dropped/repaired **stats**, not error counts), the findings are
-real but out of date:
+When a mutator — a `clean` with `apply: true`, or a `restore` —
+finished after that validation, the counts are real but out of date:
 
 ```jsonc
 "findings": { "errors": 12, "warnings": 3, "stale": true,

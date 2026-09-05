@@ -31,6 +31,7 @@ from .. import doctor, export as export_mod, peaks, prepare, say as say_mod
 from ..config import Project, TIERS
 from ..lock import LockBusy
 from . import catalog, dataset as dataset_mod, settings
+from . import stages as stages_mod
 from .jobs import JobError, JobManager
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -284,6 +285,14 @@ def create_app(workspace: Path | None = None,
             "checkpoints": local_checkpoints(proj),
             "jobs": manager().list_for_project(proj.root)[:10],
         }
+
+    @app.get("/api/projects/{project_id}/stages")
+    def project_stages(project_id: str):
+        """Readiness view (workorder-04 A2): six stages, one `next`,
+        everything derived from existing records — never recomputed."""
+        proj = project_or_404(project_id)
+        return stages_mod.compute(proj,
+                                  manager().list_for_project(proj.root))
 
     @app.delete("/api/projects/{project_id}")
     def delete_project(project_id: str):
