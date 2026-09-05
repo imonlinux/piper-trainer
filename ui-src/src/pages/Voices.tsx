@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, get, patch, post, postWav } from "../api";
-import type { Checkpoint, VoiceInfo } from "../types";
+import type { Checkpoint, ProjectDetail, VoiceInfo } from "../types";
 
 // The Voices screen (§6.5): export a training checkpoint under a
 // governed name, tune inference with the three sliders that change how
@@ -21,6 +21,11 @@ export function VoicesPage({ name }: { name: string }) {
   const [voiceName, setVoiceName] = useState("");
   const [exportMsg, setExportMsg] = useState("");
   const [exportErr, setExportErr] = useState("");
+  // The box is prefilled with the same default the server computes
+  // ({name}-{tier}); typing overrides it, clearing it hands the choice
+  // back to the server. Editable default, not a lock.
+  const nameTouched = useRef(false);
+  const [tier, setTier] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -49,6 +54,16 @@ export function VoicesPage({ name }: { name: string }) {
     get<Checkpoint[]>(`/projects/${name}/checkpoints`)
       .then(setCkpts)
       .catch(() => setCkpts([]));
+  }, [name]);
+
+  useEffect(() => {
+    get<ProjectDetail>(`/projects/${name}`)
+      .then((d) => {
+        const t = d.config.tier ?? "medium";
+        setTier(t);
+        if (!nameTouched.current) setVoiceName(`${name}-${t}`);
+      })
+      .catch(() => setTier("medium"));
   }, [name]);
 
   async function doExport() {
@@ -153,8 +168,11 @@ export function VoicesPage({ name }: { name: string }) {
           </select>
           <input
             value={voiceName}
-            onChange={(e) => setVoiceName(e.target.value)}
-            placeholder="voice name (default: project-tier-voice)"
+            onChange={(e) => {
+              nameTouched.current = true;
+              setVoiceName(e.target.value);
+            }}
+            placeholder={`voice name (default: ${name}-${tier ?? "…"})`}
             style={{ width: "24em" }}
           />
           <button type="submit">export</button>
