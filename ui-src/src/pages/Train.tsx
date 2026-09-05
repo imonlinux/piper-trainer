@@ -95,6 +95,13 @@ export function TrainPage({ name }: { name: string }) {
   const fetching =
     fstream.job !== null &&
     (fstream.job.state === "running" || fstream.job.state === "queued");
+  // The measure job gets the same summary treatment as the run: its
+  // TARGET directive emits step N/50, so progress and a bar are free.
+  const msum = useMemo(
+    () => summarize(mstream.lines, mstream.job),
+    [mstream.lines, mstream.job],
+  );
+  const mpct = percentDone(msum, mstream.job?.state ?? "");
 
   // Keep the raw log pinned to the bottom as lines land (same contract
   // as the Project page's stream — this page is now a watch surface too).
@@ -115,6 +122,13 @@ export function TrainPage({ name }: { name: string }) {
         setDetail(d);
         setCkpts(cks);
         setFetchPath(d.config.catalog_path ?? "");
+        // Restore the warmstart selection on revisit: the project's chosen
+        // base voice is the default source. (Component state dies with the
+        // page; a round-trip to the project page must not clear it.)
+        const projVoice = d.config.catalog_path;
+        if (projVoice && cks.some((c) => c.catalog_path === projVoice)) {
+          setWarmSel(`c:${projVoice}`);
+        }
         // "continue" is the natural default once a run exists; with a
         // catalog voice — fetched or merely chosen at creation — the page
         // opens on warmstart, where the fetch row lives. (Defaulting a
@@ -534,15 +548,26 @@ export function TrainPage({ name }: { name: string }) {
           full run from the measured speed
         </span>
       </div>
-      {measuring && (
-        <p className="muted">
-          train preview running — its log is in the jobs list
-        </p>
+      {mstream.job !== null && (
+        <div className="logstrip">
+          <span className={`state-${mstream.job.state}`}>
+            preview · {mstream.job.state}
+          </span>
+          <span className="muted">{summaryText(msum) || "starting…"}</span>
+          {mpct !== null && (
+            <span className="bar" aria-hidden="true">
+              <span className="bar-fill" style={{ width: `${mpct}%` }} />
+            </span>
+          )}
+        </div>
+      )}
+      {mstream.job?.state === "succeeded" && (
+        <p className="muted">preview done — projection updated below</p>
       )}
       {mstream.job?.state === "failed" && (
         <p className="error">
-          train preview failed: {mstream.job.error ?? "see its log"} — the
-          full run would have failed the same way
+          the full run would have failed the same way —{" "}
+          {mstream.job.error ?? "see its log"}
         </p>
       )}
       {preview === null ? (
