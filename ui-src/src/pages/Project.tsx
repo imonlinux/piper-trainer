@@ -47,7 +47,7 @@ export function ProjectPage({ name }: { name: string }) {
   const [ingestId, setIngestId] = useState<string | null>(null);
   const [watchId, setWatchId] = useState<string | null>(null);
   const autoWatched = useRef(false);
-  const { lines, job: watched, logHref } = useJobStream(watchId);
+  const { lines, job: watched, logHref, connected } = useJobStream(watchId);
   const logPre = useRef<HTMLPreElement>(null);
   // The clean layer over the raw tail: progress + RESULT folded from the
   // runner's ##directives (and Lightning's Epoch lines for train jobs).
@@ -105,13 +105,14 @@ export function ProjectPage({ name }: { name: string }) {
     }
   }, [p]);
 
-  // List refresh pauses only while the watched job is actually live
-  // (the websocket carries its state); watching a finished job must NOT
-  // pause the poll, or the job table would go stale forever.
+  // List refresh pauses only while the watched job is live AND the
+  // socket is actually carrying its state; a finished job or a dropped
+  // socket must NOT pause the poll, or the job table would go stale
+  // forever (the stream reconnects with backoff on its own).
   const watchActive =
     watchId !== null &&
     (watched === null || watched.state === "running" || watched.state === "queued");
-  const paused = watchActive || loadError !== null;
+  const paused = (watchActive && connected) || loadError !== null;
   usePoll(async () => {
     try {
       const jobs = await get<Job[]>(`/projects/${name}/jobs`);

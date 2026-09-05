@@ -17,6 +17,7 @@ import json
 import re
 import shutil
 import subprocess
+import threading
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -24,6 +25,14 @@ from urllib.parse import urlsplit
 from .prepare import AUDIO_EXT, sanitize_stem
 
 CHUNK = 1 << 20
+
+# Remote fetch caps (§2.5). A dataset is built from clips; nothing here
+# needs to be bigger than a long audiobook. Without a budget, a mistyped
+# URL pointing at a multi-GB blob (or an infinite stream) fills the disk
+# unattended — these caps turn that into a loud failure instead.
+MAX_FETCH_BYTES = 2 * (1 << 30)          # 2 GiB per fetched file
+FETCH_TIMEOUT = 60                        # seconds per socket op
+MEDIA_SITE_TIMEOUT = 30 * 60              # seconds for one yt-dlp run
 
 # Content types a direct URL may serve. text/html is the important
 # refusal: a 404 landing page must not land in raw/ wearing a .mp3 name.
@@ -79,7 +88,7 @@ def fetch_url(url: str, dest: Path, emit) -> list[Path]:
         raise RuntimeError(f"unsupported url scheme {scheme!r} (http/https only)")
     req = urllib.request.Request(url, headers={"User-Agent": "piper-trainer-ingest"})
     try:
-        resp = urllib.request.urlopen(req, timeout=60)
+        resp = urllib.request.urlopen(req, timeout=FETCH_TIMEOUT)
     except OSError as exc:
         raise RuntimeError(f"fetch failed: {exc}") from exc
     with resp:
@@ -91,15 +100,29 @@ def fetch_url(url: str, dest: Path, emit) -> list[Path]:
         name = url_filename(
             url, resp.headers.get("Content-Disposition"), ctype)
         total = int(resp.headers.get("Content-Length") or 0)
+        if total > MAX_FETCH_BYTES:
+            raise RuntimeError(
+                f"{name} is {total / (1 << 30):.1f} GiB — over the "
+                f"{MAX_FETCH_BYTES // (1 << 30)} GiB fetch cap")
         out = dest / name
         done = 0
-        with out.open("wb") as fh:
-            while chunk := resp.read(CHUNK):
-                fh.write(chunk)
-                done += len(chunk)
-                if total:
-                    emit("PROGRESS", {"current": round(done / total * 100),
-                                      "total": 100, "unit": "percent"})
+        try:
+            with out.open("wb") as fh:
+                while chunk := resp.read(CHUNK):
+                    fh.write(chunk)
+                    done += len(chunk)
+                    if done > MAX_FETCH_BYTES:
+                        raise RuntimeError(
+                            f"stream passed {MAX_FETCH_BYTES // (1 << 30)} GiB "
+                            f"with no end in sight — over the fetch cap "
+                            f"(Content-Length was missing or wrong)")
+                    if total:
+                        emit("PROGRESS",
+                             {"current": round(done / total * 100),
+                              "total": 100, "unit": "percent"})
+        except RuntimeError:
+            out.unlink(missing_ok=True)   # never leave a partial in incoming/
+            raise
     return [out]
 
 
@@ -113,6 +136,8 @@ def media_site_cmd(url: str, dest: Path, sections: str | None = None,
     if scheme not in ("http", "https"):
         raise RuntimeError(f"unsupported url scheme {scheme!r} (http/https only)")
     cmd = ["yt-dlp", "-x", "--audio-format", "wav",
+           "--max-filesize", str(MAX_FETCH_BYTES),
+           "--socket-timeout", str(FETCH_TIMEOUT),
            "-o", str(dest / "%(title)s.%(ext)s")]
     if not playlist:
         cmd.append("--no-playlist")
@@ -137,16 +162,32 @@ def fetch_media_site(url: str, dest: Path, sections: str | None = None,
             "yt-dlp is not installed in this image; media-site ingest "
             "is unavailable") from None
     assert proc.stdout is not None
-    for line in proc.stdout:
-        line = line.rstrip("\n")
-        print(line, flush=True)
-        tail.append(line)
-        tail = tail[-30:]
-        m = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", line)
-        if m and emit:
-            emit("PROGRESS", {"current": float(m.group(1)),
-                              "total": 100, "unit": "percent"})
-    code = proc.wait()
+    # Watchdog: a hung extractor (dead CDN, wedged ffmpeg pipe) would
+    # otherwise hold the job open forever. The Timer thread kills it from
+    # outside; the flag turns the resulting nonzero exit into a clear
+    # timeout error instead of a tail of unrelated log lines.
+    timed_out = threading.Event()
+    watchdog = threading.Timer(
+        MEDIA_SITE_TIMEOUT, _kill_proc_tree, args=(proc, timed_out))
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            print(line, flush=True)
+            tail.append(line)
+            tail = tail[-30:]
+            m = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", line)
+            if m and emit:
+                emit("PROGRESS", {"current": float(m.group(1)),
+                                  "total": 100, "unit": "percent"})
+        code = proc.wait()
+    finally:
+        watchdog.cancel()
+    if timed_out.is_set():
+        raise RuntimeError(
+            f"yt-dlp ran past {MEDIA_SITE_TIMEOUT // 60} min and was "
+            "killed — raise the cap only with a reason")
     if code != 0:
         # Surface the extractor's own words: it is usually the fix (§2.5.3)
         raise RuntimeError("yt-dlp failed:\n" + "\n".join(tail[-10:]))
@@ -155,6 +196,20 @@ def fetch_media_site(url: str, dest: Path, sections: str | None = None,
     if not got:
         raise RuntimeError("yt-dlp produced no audio files")
     return got
+
+
+def _kill_proc_tree(proc: subprocess.Popen, timed_out: threading.Event
+                    ) -> None:
+    """Watchdog callback: TERM, then KILL after a grace pause."""
+    timed_out.set()
+    try:
+        proc.terminate()
+        proc.wait(timeout=10)
+    except Exception:  # noqa: BLE001 — best effort; KILL is the backstop
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 def _snapshot_download(repo_id: str) -> Path:

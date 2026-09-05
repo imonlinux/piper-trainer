@@ -127,11 +127,43 @@ export function AuditPage({ name }: { name: string }) {
     [findings],
   );
 
-  async function runJob(kind: string, params: Record<string, unknown> = {}) {
+  async function runJob(
+    kind: string,
+    params: Record<string, unknown> = {},
+  ): Promise<Job | null> {
     setMessage("");
-    await post<Job>(`/projects/${name}/jobs`, { kind, params });
-    setJobs(await get<Job[]>(`/projects/${name}/jobs`));
+    try {
+      const job = await post<Job>(`/projects/${name}/jobs`, { kind, params });
+      setJobs(await get<Job[]>(`/projects/${name}/jobs`));
+      return job;
+    } catch (e) {
+      // A refused submit must say so here — with no catch, `void
+      // runJob(...)` clicks fail silently and the page looks hung.
+      setMessage(`error: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
   }
+
+  // Mutations (clean apply, restore) change the dataset only once their
+  // job finishes server-side; the table reloads when that job lands in a
+  // terminal state, not at POST time.
+  const datasetRefreshJob = useRef<string | null>(null);
+  useEffect(() => {
+    if (!datasetRefreshJob.current) return;
+    const job = jobs.find((j) => j.id === datasetRefreshJob.current);
+    if (!job || (job.state !== "succeeded" && job.state !== "failed")) return;
+    datasetRefreshJob.current = null;
+    if (job.state === "failed") {
+      setMessage(`error: ${job.error ?? "job failed"}`);
+      return;
+    }
+    get<Dataset>(`/projects/${name}/dataset`)
+      .then((d) => {
+        setData(d);
+        setMessage("done — table refreshed");
+      })
+      .catch(() => setMessage("done — but the table refresh failed; reload"));
+  }, [jobs, name]);
 
   async function applyClean() {
     const n = data?.rows.filter((r) => !r.quarantined).length ?? 0;
@@ -139,14 +171,17 @@ export function AuditPage({ name }: { name: string }) {
       `Apply clean? Clips with findings move to dataset/quarantine/ ` +
         `(nothing is deleted; restore brings them back).\n${n} rows in table.`,
     )) return;
-    await runJob("clean", { apply: true });
+    const job = await runJob("clean", { apply: true });
+    if (!job) return;
+    datasetRefreshJob.current = job.id;
     setMessage("clean apply queued");
   }
 
   async function restoreClip(clipId: string) {
-    await runJob("restore", { ids: [clipId] });
+    const job = await runJob("restore", { ids: [clipId] });
+    if (!job) return;
+    datasetRefreshJob.current = job.id;
     setMessage(`restore queued for ${clipId}`);
-    setData(await get<Dataset>(`/projects/${name}/dataset`));
   }
 
   function sortOn(key: SortKey) {

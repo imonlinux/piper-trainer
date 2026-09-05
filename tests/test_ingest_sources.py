@@ -320,3 +320,108 @@ def test_train_preview_projection_counts_resume_epochs(tmp_path):
     assert body["seconds_per_epoch"] == 1800.0  # 7200 s wall / 4 trained
     assert body["projected_seconds"] == 180000
     assert "epoch 40 -> 44" in body["basis"]
+
+
+# -------------------------------------------------------------- fetch caps
+
+class _FakeResp:
+    """The seam surface fetch_url uses: headers + read() + context mgr."""
+    def __init__(self, ctype="audio/wav", chunks=(), length=None):
+        self._ctype = ctype
+        self._chunks = list(chunks)
+        self._hdrs = {"Content-Disposition": None,
+                      "Content-Length": None if length is None
+                      else str(length)}
+        self.headers = type("H", (), {
+            "get_content_type": (lambda s, c=self._ctype: c),
+            "get": (lambda s, k, d=None: self._hdrs.get(k, d)),
+        })()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, n):
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+def test_fetch_url_rejects_oversized_content_length(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest_mod, "urllib",
+                        mock.Mock(request=mock.Mock(
+                            urlopen=lambda req, timeout: _FakeResp(length=4 << 30))))
+    with pytest.raises(RuntimeError, match="fetch cap"):
+        ingest_mod.fetch_url("https://h.example/big.wav", tmp_path, lambda *a: None)
+    assert list(tmp_path.iterdir()) == []   # nothing staged
+
+
+def test_fetch_url_enforces_stream_budget(tmp_path, monkeypatch):
+    """A missing/wrong Content-Length cannot smuggle an endless stream
+    past the cap: the budget applies to the bytes that actually land,
+    and the partial file is removed on failure."""
+    big = b"x" * ingest_mod.CHUNK
+    resp = _FakeResp(chunks=[big] * 10)   # 10 MiB, cap patched to 5 MiB
+    monkeypatch.setattr(ingest_mod, "urllib",
+                        mock.Mock(request=mock.Mock(
+                            urlopen=lambda req, timeout: resp)))
+    monkeypatch.setattr(ingest_mod, "MAX_FETCH_BYTES", 5 << 20)
+    with pytest.raises(RuntimeError, match="fetch cap"):
+        ingest_mod.fetch_url("https://h.example/long.wav", tmp_path,
+                             lambda *a: None)
+    assert list(tmp_path.iterdir()) == []   # partial removed
+
+
+def test_fetch_url_success_under_cap(tmp_path, monkeypatch):
+    resp = _FakeResp(chunks=[b"RIFFdata"])
+    monkeypatch.setattr(ingest_mod, "urllib",
+                        mock.Mock(request=mock.Mock(
+                            urlopen=lambda req, timeout: resp)))
+    got = ingest_mod.fetch_url("https://h.example/clip.wav", tmp_path,
+                               lambda *a: None)
+    assert [p.name for p in got] == ["clip.wav"]
+    assert got[0].read_bytes() == b"RIFFdata"
+
+
+def test_media_site_cmd_carries_caps():
+    cmd = ingest_mod.media_site_cmd("https://v.example/watch/1", Path("/tmp/x"))
+    assert cmd[cmd.index("--max-filesize") + 1] == str(ingest_mod.MAX_FETCH_BYTES)
+    assert cmd[cmd.index("--socket-timeout") + 1] == str(ingest_mod.FETCH_TIMEOUT)
+
+
+def test_fetch_media_site_watchdog_kills_hang(tmp_path, monkeypatch):
+    """A hung extractor must not hold the job open forever: the watchdog
+    kills the process and the failure names the timeout."""
+    import subprocess as sp
+    import time as time_mod
+
+    monkeypatch.setattr(ingest_mod, "MEDIA_SITE_TIMEOUT", 0.2)
+
+    class _HangingProc:
+        def __init__(self):
+            self.proc = sp.Popen(["sleep", "30"], stdout=sp.PIPE,
+                                 stderr=sp.STDOUT, text=True)
+            self.stdout = self.proc.stdout
+            self.terminated = False
+            self.killed = False
+
+        def terminate(self):
+            self.terminated = True
+            self.proc.kill()   # sleep ignores TERM-ish nuances; force it
+
+        def wait(self, timeout=None):
+            return self.proc.wait(timeout=timeout)
+
+        def kill(self):
+            self.killed = True
+            self.proc.kill()
+
+    hp = _HangingProc()
+    monkeypatch.setattr(ingest_mod.subprocess, "Popen",
+                        lambda *a, **k: hp)
+    start = time_mod.monotonic()
+    with pytest.raises(RuntimeError, match="killed"):
+        ingest_mod.fetch_media_site("https://v.example/1", tmp_path)
+    assert time_mod.monotonic() - start < 10
+    hp.proc.kill()
+    hp.proc.wait()

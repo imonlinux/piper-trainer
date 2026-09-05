@@ -60,43 +60,74 @@ export function useJobStream(jobId: string | null): {
   lines: string[];
   job: Job | null;
   logHref: string | null;
+  connected: boolean;
 } {
   const [lines, setLines] = useState<string[]>([]);
   const [job, setJob] = useState<Job | null>(null);
   const [logHref, setLogHref] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
 
   useEffect(() => {
     setLines([]);
     setJob(null);
     setLogHref(null);
+    setConnected(false);
     if (!jobId) return;
 
     setLogHref(jobLogUrl(jobId));
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(
-      `${proto}://${location.host}/api/jobs/${jobId}/stream`,
-    );
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data) as StreamMsg;
-      if (msg.type === "log_reset") {
-        // The tail replaces everything; a trailing newline would become
-        // a phantom empty line in line-array form.
-        const arr = msg.text === "" ? [] : msg.text.split("\n");
-        if (arr[arr.length - 1] === "") arr.pop();
-        setLines(trimTail(arr));
-      } else if (msg.type === "log") {
-        setLines((prev) => trimTail([...prev, msg.line]));
-      } else if (msg.type === "state") {
-        setJob(msg.job);
-      }
-    };
+    // A dropped socket must not strand the page: pages pause their poll
+    // while the stream is live, so a silently dead socket would freeze
+    // the job table forever. Reconnect with backoff; every connect gets
+    // a fresh state + log tail from the server, so nothing is lost.
+    let ws: WebSocket | null = null;
+    let timer: number | undefined;
+    let attempt = 0;
+    let closed = false;
+
+    function connect(): void {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(
+        `${proto}://${location.host}/api/jobs/${jobId}/stream`,
+      );
+      ws.onopen = () => {
+        attempt = 0;
+        setConnected(true);
+      };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data) as StreamMsg;
+        if (msg.type === "log_reset") {
+          // The tail replaces everything; a trailing newline would become
+          // a phantom empty line in line-array form.
+          const arr = msg.text === "" ? [] : msg.text.split("\n");
+          if (arr[arr.length - 1] === "") arr.pop();
+          setLines(trimTail(arr));
+        } else if (msg.type === "log") {
+          setLines((prev) => trimTail([...prev, msg.line]));
+        } else if (msg.type === "state") {
+          setJob(msg.job);
+        }
+      };
+      ws.onclose = () => {
+        setConnected(false);
+        if (closed) return;
+        const delay = Math.min(1000 * 2 ** attempt, 15000);
+        attempt += 1;
+        timer = window.setTimeout(connect, delay);
+      };
+      ws.onerror = () => ws?.close(); // onclose follows and schedules retry
+    }
+    connect();
     return () => {
-      ws.onclose = null;
-      ws.close();
+      closed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
     };
   }, [jobId]);
 
-  return { lines, job, logHref };
+  return { lines, job, logHref, connected };
 }
 
 // Progress text, §1.3/§1.4 style: unit first (never an absolute epoch
