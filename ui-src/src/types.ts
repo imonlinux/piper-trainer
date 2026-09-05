@@ -239,3 +239,70 @@ export interface AuditionPreview {
   params: Record<string, unknown>;
   result: { text: string; tier: string; takes: AuditionTake[] };
 }
+
+// ------------------------------------------------------ stages (A2)
+// GET /api/projects/{name}/stages — the readiness view the shell polls.
+// Everything is derived server-side from the project directory and the
+// job records that already exist.
+
+export type StageName =
+  | "sources"
+  | "prepare"
+  | "transcribe"
+  | "audit"
+  | "train"
+  | "voices";
+
+export type StageStatus =
+  | "active"
+  | "attn"
+  | "done"
+  | "ready"
+  | "locked"
+  | string;
+
+export interface JobRef {
+  id: string;
+  kind: string;
+  state: string;
+  progress: Progress | null;
+  error: string | null;
+  finished_at: string | null;
+}
+
+export interface Requirement {
+  met: boolean;
+  text: string;
+}
+
+export interface StageInfo {
+  status: StageStatus;
+  requirements: Requirement[];
+  active_job: JobRef | null;
+  last_job: JobRef | null;
+  blocked_by: string | null;
+}
+
+// Only validate results carry counts; a later clean-apply or restore
+// marks them stale instead of recomputing (the runner returns stats,
+// not error counts, for those).
+export interface Findings {
+  errors: number;
+  warnings: number;
+  stale: boolean;
+  stale_reason?: string;
+}
+
+export interface NextCard {
+  stage: StageName;
+  why: string;
+}
+
+export interface StagesData {
+  project: { name: string; voice: string };
+  stages: Record<StageName, StageInfo>;
+  next: NextCard;
+  findings: Findings;
+  running: { job: JobRef | null; more: number };
+  chain: null;
+}

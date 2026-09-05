@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { jobLogUrl } from "./api";
-import type { Job, StreamMsg } from "./types";
+import { get, jobLogUrl } from "./api";
+import type { Job, StagesData, StreamMsg } from "./types";
 
 // ------------------------------------------------------------- hash router
 // Hash routes survive static hosting under /ui/app/ with no server
@@ -135,4 +135,68 @@ export function useJobStream(jobId: string | null): {
 export function progressText(p: { unit?: string; current?: number; total: number } | null | undefined): string {
   if (!p || !p.total) return "";
   return `${p.unit ?? ""} ${p.current ?? "-"}/${p.total}`;
+}
+
+// ---------------------------------------------------------------- stages
+// The shell's one poll (workorder-04 A3): GET /stages every 3 s, shared
+// with pages through the shell's context so pages stop fetching
+// overlapping data. A hidden tab suspends the fetch (not the timer) —
+// it costs nothing while hidden and the first tick after returning
+// catches up. An error keeps the last good data on screen and flips
+// `stale`, so the status line can say "stale" instead of pretending.
+export function useStages(name: string): {
+  data: StagesData | null;
+  loading: boolean;
+  stale: boolean;
+} {
+  const [data, setData] = useState<StagesData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [stale, setStale] = useState(false);
+
+  useEffect(() => {
+    setData(null);
+    setLoading(true);
+    setStale(false);
+  }, [name]);
+
+  const tick = async (): Promise<void> => {
+    if (document.hidden) return;
+    try {
+      const d = await get<StagesData>(
+        `/projects/${encodeURIComponent(name)}/stages`,
+      );
+      setData(d);
+      setLoading(false);
+      setStale(false);
+    } catch {
+      setStale(true);
+    }
+  };
+
+  // first fetch lands now, not on the first interval tick
+  useEffect(() => {
+    void tick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
+
+  usePoll(tick, 3000);
+
+  return { data, loading, stale };
+}
+
+// Duration between two ISO-8601 Z timestamps, human-shaped: `42s`,
+// `12m 05s`, `3h 12m`. Used by the activity table and the overview.
+export function durationText(
+  started: string | null,
+  finished: string | null,
+): string {
+  if (!started || !finished) return "";
+  const ms = Date.parse(finished) - Date.parse(started);
+  if (!(ms >= 0)) return "";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${String(m % 60).padStart(2, "0")}m`;
 }

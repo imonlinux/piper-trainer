@@ -155,3 +155,138 @@ tr.row-quarantined td { color: var(--fg-dim); text-decoration: line-through; }
 td.transcript { min-width: 320px; }
 td.transcript textarea { width: 100%; min-height: 2.2em; font: inherit; }
 tr.playing td { background: var(--surface-2); }
+
+/* --------------------------------------------------- shell (A3) */
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.spacer { flex: 1; }
+button.ghost {
+  background: transparent; border-color: transparent; color: var(--fg-dim);
+}
+button.ghost:hover:not(:disabled) { color: var(--fg); border-color: var(--border); }
+
+/* IdentityBar: 46 px; the status line is the idle JobBar */
+header.identity {
+  display: flex; gap: 12px; align-items: center;
+  padding: 0 16px; height: 46px;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+}
+header.identity strong { font-size: 15px; }
+header.identity .status-line {
+  color: var(--fg-dim); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; font-variant-numeric: tabular-nums;
+}
+header.identity details.overflow { position: relative; }
+header.identity details.overflow summary {
+  cursor: pointer; list-style: none; padding: 0 6px; color: var(--fg-dim);
+}
+header.identity details.overflow[open] .overflow-menu {
+  display: flex; flex-direction: column; gap: 6px; position: absolute;
+  right: 0; top: 130%; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 14px; min-width: 130px; z-index: 20;
+}
+header.identity details.overflow .overflow-menu a { color: var(--fg); text-decoration: none; }
+
+/* Stepper: 68 px; every pill always clickable, locked included.
+   The 2 px top stripe in the status color reads as a progress bar. */
+.stepper {
+  display: flex; gap: 6px; align-items: stretch;
+  padding: 10px 16px; height: 68px; box-sizing: border-box;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+  overflow-x: auto;
+}
+.step {
+  flex: 1 1 0; min-width: 86px; display: flex; align-items: center;
+  justify-content: center; gap: 8px;
+  border: 1px solid var(--border); border-top: 2px solid var(--state-locked);
+  border-radius: var(--radius); background: var(--surface);
+  color: var(--fg-dim); text-decoration: none; font-size: 13px;
+  transition: border-color 150ms ease;
+}
+/* hover brightens the sides only — the top stripe always keeps its
+   status color (the shorthand border-color would strip it) */
+.step:hover {
+  border-bottom-color: var(--fg-dim);
+  border-left-color: var(--fg-dim);
+  border-right-color: var(--fg-dim);
+}
+.step-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+.step-active { border-top-color: var(--state-run); color: var(--state-run); font-weight: 600; }
+.step-attn { border-top-color: var(--state-attn); color: var(--state-attn); font-weight: 600; }
+.step-done { border-top-color: var(--state-ok); color: var(--fg); }
+.step-ready { border-top-color: var(--state-open); color: var(--fg); }
+.step-locked { border-top-color: var(--state-locked); color: var(--fg-dim); }
+
+/* JobBar: 42 px, exists only while something runs; amber pulse only
+   here and in the active stage stripe — amber means work in flight */
+.jobbar {
+  display: flex; gap: 12px; align-items: center;
+  padding: 0 16px; height: 42px; box-sizing: border-box;
+  border-bottom: 1px solid var(--border); background: var(--surface-2);
+  font-variant-numeric: tabular-nums;
+}
+.jobbar-pulse {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: var(--state-run);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.jobbar .bar { flex: 0 1 220px; }
+.jobbar a { color: var(--fg-dim); }
+
+/* Gate: the dismissible banner under the shell on a stage route whose
+   requirements are unmet. Locks teach; they don't gate-click. */
+.gate {
+  border: 1px solid var(--state-attn); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--state-attn) 8%, var(--surface));
+  padding: 8px 12px; margin: 0 0 14px;
+}
+.gate-line { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.gate-reqs { margin: 8px 0 0; padding-left: 20px; }
+.gate-reqs li { color: var(--fg-dim); }
+.gate-reqs li.ok { color: var(--fg-dim); }
+
+/* Panel: the only card primitive */
+.panel {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: 12px 16px; margin: 0 0 14px;
+}
+.panel h2 {
+  display: flex; gap: 8px; align-items: baseline; margin: 0 0 8px;
+}
+.help { position: relative; }
+.help button {
+  padding: 0 7px; border-radius: 50%; font-size: 12px;
+  background: var(--surface-2); color: var(--fg-dim);
+}
+.help-text {
+  display: block; position: absolute; z-index: 20; left: 0; top: 130%;
+  width: 300px; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 8px 10px;
+  color: var(--fg-dim); font-size: 13px; font-weight: 400;
+}
+.consequence { color: var(--fg-dim); font-size: 13px; margin: 6px 0; }
+
+/* next card */
+.next-card { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.next-why { flex: 1 1 260px; margin: 0; font-size: 15px; }
+.button-primary {
+  display: inline-block; padding: 6px 18px; border-radius: var(--radius-pill);
+  background: var(--fg); color: var(--bg);
+  text-decoration: none; font-weight: 600; white-space: nowrap;
+}
+.button-primary:hover { opacity: 0.9; }
+
+.settings-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.settings-cols h3 { margin: 0 0 4px; color: var(--fg-dim); }
+.settings-cols p { margin: 0; font-variant-numeric: tabular-nums; }
+
+ul.recent { list-style: none; margin: 0; padding: 0; }
+ul.recent li {
+  display: flex; gap: 12px; align-items: baseline;
+  padding: 4px 0; border-bottom: 1px solid var(--border);
+}
+ul.recent li:last-child { border-bottom: none; }
+ul.recent li span:first-child { flex: 1; }

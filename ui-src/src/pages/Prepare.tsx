@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, del, fileUrl, get, post, postEmpty } from "../api";
 import type { Job, Peaks, PreviewRow, Region, SourceInfo } from "../types";
 import { Wave } from "../components/Wave";
+import { Consequence } from "../shell";
 
 type Ref<T> = { current: T };
 
@@ -151,6 +152,19 @@ export function PreparePage({ name }: { name: string }) {
     sweepFp.current = ""; // force the next poll to redraw
   }
 
+  // Full prepare outside the promote flow (e.g. re-running after new
+  // sources): the server replays the promoted tuner settings.
+  async function runPrepare(): Promise<void> {
+    setError("");
+    setMessage("");
+    try {
+      await post(`/projects/${name}/jobs`, { kind: "prepare", params: {} });
+      setMessage("full prepare queued — it replays the promoted tuner settings");
+    } catch (ex) {
+      setError(String(ex));
+    }
+  }
+
   // The source just auditioned turned out to be bad (0 clips, garbage
   // audio): remove it without a round trip to the project page. The
   // backend moves it to .trash, so a mistyped confirm is recoverable.
@@ -202,6 +216,15 @@ export function PreparePage({ name }: { name: string }) {
       {error && <p className="error">{error}</p>}
       {message && <p className="muted">{message}</p>}
 
+      <p className="row">
+        <button onClick={() => void runPrepare()}>run prepare</button>
+        <span className="muted">replays the promoted tuner settings</span>
+      </p>
+      <Consequence>
+        re-prepare re-segments sources; existing clips and transcripts are
+        kept for unchanged sources
+      </Consequence>
+
       <h2>Source</h2>
       <div className="row">
         <select
@@ -245,7 +268,7 @@ export function PreparePage({ name }: { name: string }) {
         <Wave data={peaks} regions={regions} />
       ) : (
         <p className="muted">
-          no sources — upload audio on the project page first
+          no sources — <a href={`#/sources/${name}`}>add audio on the sources page</a> first
         </p>
       )}
 
