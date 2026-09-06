@@ -95,8 +95,14 @@ export function NewProjectPage() {
   async function submit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     setError(null);
-    // locale is e.g. en_GB; the espeak voice for it is en-gb
-    const derived = locale.replace("_", "-").toLowerCase();
+    // locale is e.g. en_GB; the espeak voice must exist in piper1-gpl's
+    // vendored espeak-ng data, which has no plain "en-gb" — the official
+    // en_GB checkpoints all train with "en-gb-x-rp" (checked: alan, alba,
+    // jenny_dioco, northern_english_male, semaine). en_US derives to the
+    // still-valid "en-us"; other locales keep the mechanical name.
+    const derived =
+      locale === "en_GB" ? "en-gb-x-rp"
+      : locale.replace("_", "-").toLowerCase();
     const espeakVoice = espeak || derived;
     setSubmitting(true);
     try {
