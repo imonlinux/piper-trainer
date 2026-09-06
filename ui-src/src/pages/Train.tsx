@@ -4,6 +4,7 @@ import { lossHistory, percentDone, summarize, summaryText } from "../joblog";
 import type { LossPoint } from "../joblog";
 import { progressText, useJobStream } from "../hooks";
 import type {
+  Catalog,
   Checkpoint,
   Job,
   ProjectDetail,
@@ -38,6 +39,10 @@ function warmstartPath(sel: string, ckpts: Checkpoint[]): string | null {
   if (sel === "") return null;
   const [kind, ...rest] = sel.split(":");
   const key = rest.join(":");
+  // "k:" = a catalog pick that has not been downloaded yet; it cannot
+  // back a run until its fetch job lands and the picker flips it to
+  // "c:".
+  if (kind === "k") return null;
   const c = ckpts.find((x) =>
     kind === "c" ? x.catalog_path === key : x.path === key,
   );
@@ -75,6 +80,9 @@ export function TrainPage({ name }: { name: string }) {
   const [measureId, setMeasureId] = useState<string | null>(null);
   const [fetchId, setFetchId] = useState<string | null>(null);
   const [fetchPath, setFetchPath] = useState("");
+  const [cat, setCat] = useState<Catalog | null>(null);
+  const [catErr, setCatErr] = useState(false);
+  const [catRetry, setCatRetry] = useState(0);
   const [measuredAt, setMeasuredAt] = useState(0);
   const [fullLog, setFullLog] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -124,10 +132,14 @@ export function TrainPage({ name }: { name: string }) {
         setFetchPath(d.config.catalog_path ?? "");
         // Restore the warmstart selection on revisit: the project's chosen
         // base voice is the default source. (Component state dies with the
-        // page; a round-trip to the project page must not clear it.)
+        // page; a round-trip to the project page must not clear it.) A
+        // chosen-but-unfetched voice restores as "k:" so the page opens
+        // pointing at its own download instead of a silently empty pick.
         const projVoice = d.config.catalog_path;
         if (projVoice && cks.some((c) => c.catalog_path === projVoice)) {
           setWarmSel(`c:${projVoice}`);
+        } else if (projVoice) {
+          setWarmSel(`k:${projVoice}`);
         }
         // "continue" is the natural default once a run exists; with a
         // catalog voice — fetched or merely chosen at creation — the page
@@ -168,6 +180,24 @@ export function TrainPage({ name }: { name: string }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
+
+  // The HF voice catalog (same endpoint the new-project picker uses,
+  // snapshot fallback included): it is what lets the warmstart picker
+  // offer every voice, not just the ones already on disk. Retried with
+  // refresh=1 so a stale snapshot fallback can be forced aside.
+  useEffect(() => {
+    let alive = true;
+    get<Catalog>(catRetry === 0 ? "/checkpoints/catalog" : "/checkpoints/catalog?refresh=1")
+      .then((c) => {
+        if (alive) setCat(c);
+      })
+      .catch(() => {
+        if (alive) setCatErr(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [catRetry]);
 
   // Full log for the loss history (the live tail is capped at 5000
   // lines; a 4000-epoch run blows past that within hours).
@@ -249,6 +279,33 @@ export function TrainPage({ name }: { name: string }) {
   // ------------------------------------------------------------ derived
   const runCkpts = ckpts.filter((c) => c.source === "run");
   const catCkpts = ckpts.filter((c) => c.source === "catalog");
+  // The picker's "pick to download" groups: everything the catalog
+  // offers, grouped per family/locale, minus the voices already on
+  // disk (those sit in the fetched group above). A pick from here
+  // cannot back a run yet — it queues the one-time download instead.
+  const catGroups = useMemo(() => {
+    if (!cat) return [];
+    const onDisk = new Set(
+      ckpts.filter((c) => c.source === "catalog").map((c) => c.catalog_path),
+    );
+    const out: { label: string; entries: { path: string; label: string }[] }[] =
+      [];
+    for (const fam of Object.keys(cat.languages).sort()) {
+      for (const loc of Object.keys(cat.languages[fam]).sort()) {
+        const entries = Object.keys(cat.languages[fam][loc])
+          .sort()
+          .flatMap((v) =>
+            (cat.languages[fam][loc][v] ?? []).map((q) => ({
+              path: `${fam}/${loc}/${v}/${q}`,
+              label: `${v} · ${q}`,
+            })))
+          .filter((e) => !onDisk.has(e.path));
+        if (entries.length > 0)
+          out.push({ label: `${fam} / ${loc}`, entries });
+      }
+    }
+    return out;
+  }, [cat, ckpts]);
   const lastRunEpoch = runCkpts.length
     ? Math.max(...runCkpts.map((c) => c.epoch ?? 0))
     : null;
@@ -433,18 +490,26 @@ export function TrainPage({ name }: { name: string }) {
         <div className="row">
           <select
             value={warmSel}
-            onChange={(e) => setWarmSel(e.target.value)}
-            aria-label="warmstart checkpoint"
+            onChange={(e) => {
+              const v = e.target.value;
+              setWarmSel(v);
+              // A catalog pick becomes the pending fetch: when its
+              // download job lands, the completion effect matches
+              // fetchPath against the refreshed checkpoints and flips
+              // the selection to the fetched entry.
+              if (v.startsWith("k:")) setFetchPath(v.slice(2));
+            }}
+            aria-label="base voice"
           >
-            <option value="">— pick a base checkpoint —</option>
-            <optgroup label="fetched (catalog)">
+            <option value="">— pick a base voice —</option>
+            <optgroup label="on disk — downloaded base voices">
               {catCkpts.map((c) => (
                 <option key={c.catalog_path} value={`c:${c.catalog_path}`}>
                   {c.catalog_path}
                 </option>
               ))}
             </optgroup>
-            <optgroup label="this project's runs">
+            <optgroup label="on disk — this project's runs">
               {runCkpts.map((c) => (
                 <option key={c.path} value={`r:${c.path}`}>
                   {c.tier} · {c.name}
@@ -452,46 +517,60 @@ export function TrainPage({ name }: { name: string }) {
                 </option>
               ))}
             </optgroup>
+            {catGroups.map((g) => (
+              <optgroup key={g.label} label={`catalog — ${g.label}`}>
+                {g.entries.map((e) => (
+                  <option key={e.path} value={`k:${e.path}`}>
+                    {e.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
           </select>
           {warmSel === "" && (
-            <span className="muted">a warmstart needs a base checkpoint</span>
+            <span className="muted">
+              a warm start needs a base voice — pick one below, or switch
+              mode
+            </span>
           )}
         </div>
       )}
-      {mode === "warm" && (
-        <>
-          <div className="row">
-            <input
-              value={fetchPath}
-              onChange={(e) => setFetchPath(e.target.value)}
-              placeholder="family/locale/voice/quality"
-              aria-label="catalog checkpoint path"
-              spellCheck={false}
-              style={{ width: "24em" }}
-            />
-            <button
-              disabled={
-                !validCatalogPath(fetchPath.trim()) || fetching || running ||
-                measuring
-              }
-              onClick={() => void fetchBase()}
-            >
-              fetch base voice
-            </button>
-            {fetching && fstream.job !== null && (
-              <span className="muted">
-                {fstream.job.state} · {progressText(fstream.job.progress)}
-              </span>
-            )}
-          </div>
-          {catCkpts.length === 0 && (
-            <p className="muted">
-              nothing fetched yet — paste the catalog path this project was
-              created with (prefilled above) and fetch it once; every
-              project reuses it after that
-            </p>
+      {mode === "warm" && warmSel.startsWith("k:") && (
+        <div className="row">
+          <span className="muted">
+            {warmSel.slice(2)} is not on this machine yet — the download
+            runs once and every project reuses it after that
+          </span>
+          <button
+            disabled={fetching || running || measuring}
+            onClick={() => void fetchBase()}
+          >
+            {fetching ? "downloading…" : "download this voice"}
+          </button>
+          {fetching && fstream.job !== null && (
+            <span className="muted">
+              {fstream.job.state} · {progressText(fstream.job.progress)}
+            </span>
           )}
-        </>
+        </div>
+      )}
+      {mode === "warm" && cat === null && !catErr && (
+        <p className="muted">loading the voice catalog…</p>
+      )}
+      {mode === "warm" && catErr && (
+        <p className="muted">
+          the voice catalog could not be loaded —{" "}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              setCatErr(false);
+              setCatRetry((r) => r + 1);
+            }}
+          >
+            retry
+          </a>
+        </p>
       )}
 
       <h2>Dials</h2>
