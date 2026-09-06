@@ -135,6 +135,12 @@ Statuses, precedence `active > attn > done > ready > locked`:
 | `ready` | prerequisites met, runnable | light neutral |
 | `locked` | prerequisites missing | dim neutral |
 
+Preview jobs never decide a stage's status: a preview writes nothing
+to the dataset, so a succeeded preview leaves prepare `ready` (not
+`done`), a failed preview does not raise `attn` (the Prepare page
+reports it inline), and a later preview does not supersede downstream
+stages. A running preview still shows the stage as `active`.
+
 `requirements` is a list of `{met, text}` checks in display order;
 `text` names numbers ("2431 clips in dataset/wavs", "transcribe has not
 run since the last prepare"). `blocked_by` is **derived**: the first
@@ -183,7 +189,8 @@ cheap; the number just says when it was measured.
 1. Any stage `active` → that stage, why "running now".
 2. Else the first stage (pipeline order) with `attn` → fix it.
 3. Else the first stage with `ready` → run it.
-4. Else `voices`, why "audition your voice".
+4. Else the first `locked` stage (the frontier), why = its `blocked_by`.
+5. Else `voices`, why "audition your voice" (everything done).
 
 ## A3. Shell components
 
@@ -318,12 +325,27 @@ source file; prepared clips already made from it stay"). Fetch caps and
 the watchdog are server-side already; the page just reports their
 errors verbatim.
 
-### Prepare (`#/prepare/{name}`)
+### Prepare (`#/prepare/{name}`) — reads top to bottom as the loop runs
 
-Existing flow plus: readiness banner from stages data; the preview
-promote flow stays; a Consequence line on "re-prepare" ("re-segments
-sources; existing clips and transcripts are kept for unchanged
-sources"). In Phase B this page hosts gate 1.
+Four numbered panels in work order; the page's reading order is the
+work order:
+
+1. **Pick a source** — select, channel, play, delete, waveform (the
+   selected preview's regions overlay it). With no sources the page
+   collapses to this one pointer at the sources page; the shell's gate
+   banner already says prepare is blocked. The source list re-fetches
+   every 5 s so the body never contradicts a live gate banner.
+2. **Tune the splitter** — VAD dials, denoise-first, "preview segment"
+   and "apply to all"; the selected preview's clips (or per-source
+   batch table, or the 0-clip coaching notice) render right below the
+   buttons that produced them.
+3. **Denoise A/B (optional)** — its button lives here, with its table
+   and audio grid.
+4. **Run the full prepare** — the segment sweep with promote (the goal
+   of the tuning loop), then "run the full prepare" replaying the
+   promoted dials, the re-prepare Consequence line, and prune.
+
+In Phase B this page hosts gate 1.
 
 ### Transcribe (`#/transcribe/{name}`) — new page
 

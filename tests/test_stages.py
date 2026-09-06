@@ -213,3 +213,57 @@ def test_stages_endpoint_smoke(tmp_path):
         assert list(body["stages"].keys()) == list(stages.STAGES)
         assert body["next"]["stage"] == "sources"
         assert body["chain"] is None
+
+
+def test_preview_never_marks_prepare_done(tmp_path):
+    # A succeeded preview is an experiment, not the stage's work
+    # product: prepare stays ready and the next card keeps pointing at
+    # it. last_job reports real pipeline jobs only.
+    proj = make_proj(tmp_path)
+    (proj.raw / "a.wav").write_bytes(b"x")
+    jobs = [job("preview", "succeeded", finished_at="2026-09-01T00:00:10Z",
+                params={"stage": "segment"}, jid="p1")]
+    data = stages.compute(proj, jobs)
+    assert stage(data, "prepare")["status"] == "ready"
+    assert stage(data, "prepare")["last_job"] is None
+
+
+def test_failed_preview_does_not_raise_attention(tmp_path):
+    proj = make_proj(tmp_path)
+    (proj.raw / "a.wav").write_bytes(b"x")
+    jobs = [job("preview", "failed", finished_at="2026-09-01T00:00:10Z",
+                params={"stage": "segment"}, jid="p1")]
+    data = stages.compute(proj, jobs)
+    assert stage(data, "prepare")["status"] == "ready"
+
+
+def test_next_falls_back_to_locked_frontier(tmp_path):
+    # All stages behind the frontier read done and nothing is runnable:
+    # the next card points at the first locked stage with its blocker,
+    # not at audition.
+    proj = make_proj(tmp_path)
+    (proj.raw / "a.wav").write_bytes(b"x")
+    jobs = [job("prepare", "succeeded", finished_at="2026-09-01T00:00:10Z",
+                jid="j1")]
+    data = stages.compute(proj, jobs)
+    assert stage(data, "prepare")["status"] == "done"
+    assert data["next"] == {"stage": "transcribe",
+                            "why": "0 clips in the dataset"}
+
+
+def test_later_preview_does_not_supersede_downstream(tmp_path):
+    # Previews write nothing, so a preview after a full transcribe must
+    # not mark the dataset stale.
+    proj = make_proj(tmp_path)
+    (proj.raw / "a.wav").write_bytes(b"x")
+    proj.metadata.write_text("c1|hello world\n")
+    jobs = [
+        job("prepare", "succeeded", finished_at="2026-09-01T00:00:10Z",
+            jid="j1"),
+        job("transcribe", "succeeded", finished_at="2026-09-01T00:01:00Z",
+            jid="j2"),
+        job("preview", "succeeded", finished_at="2026-09-01T00:02:00Z",
+            params={"stage": "segment"}, jid="p1"),
+    ]
+    data = stages.compute(proj, jobs)
+    assert stage(data, "transcribe")["status"] == "done"

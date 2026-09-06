@@ -144,13 +144,17 @@ def compute(proj: config.Project, jobs: list[dict]) -> dict:
 
     # last terminal job and active jobs per stage; supersede check: a
     # succeeded stage is only "done" while no earlier stage finished
-    # after it.
+    # after it. Previews are prepare-stage experiments: a running one
+    # still shows the stage as active, but done, failed-attention and
+    # supersede are decided by real pipeline jobs only, because a
+    # preview writes nothing to the dataset.
     last: dict[str, dict | None] = {}
     active: dict[str, list[dict]] = {}
     superseded: dict[str, bool] = {}
     for i, stage in enumerate(STAGES):
         sj = stage_jobs[stage]
-        done = [j for j in sj if j.get("finished_at")]
+        real = [j for j in sj if j.get("kind") != "preview"]
+        done = [j for j in real if j.get("finished_at")]
         last[stage] = max(done, key=_ts) if done else None
         active[stage] = sorted(
             (j for j in sj if j.get("state") in ACTIVE_STATES),
@@ -160,7 +164,8 @@ def compute(proj: config.Project, jobs: list[dict]) -> dict:
             t = last[stage]["finished_at"] or ""
             for earlier in STAGES[:i]:
                 for j in stage_jobs[earlier]:
-                    if (j.get("state") == "succeeded"
+                    if (j.get("kind") != "preview"
+                            and j.get("state") == "succeeded"
                             and (j.get("finished_at") or "") > t):
                         sup = True
                         break
@@ -233,6 +238,16 @@ def compute(proj: config.Project, jobs: list[dict]) -> dict:
                     why = f"{stage} has not run yet"
                 nxt = {"stage": stage, "why": why}
                 break
+            else:
+                # Nothing actionable: point at the frontier (first
+                # locked stage) and say what is blocking it, instead of
+                # skipping ahead to audition.
+                for stage in STAGES:
+                    if out_stages[stage]["status"] == "locked":
+                        nxt = {"stage": stage,
+                               "why": out_stages[stage]["blocked_by"]
+                               or "earlier stages first"}
+                        break
 
     running = sorted((j for j in jobs
                       if j.get("state") in ACTIVE_STATES), key=_ts)
