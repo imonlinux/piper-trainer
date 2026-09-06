@@ -37,6 +37,7 @@ export function PreparePage({ name }: { name: string }) {
   const [segSweep, setSegSweep] = useState<PreviewRow[]>([]);
   const [dnSweep, setDnSweep] = useState<PreviewRow[]>([]);
   const [failedPreviews, setFailedPreviews] = useState<{ id: string; error: string }[]>([]);
+  const [prepFail, setPrepFail] = useState<{ id: string; error: string } | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [gone, setGone] = useState(false);
@@ -115,6 +116,7 @@ export function PreparePage({ name }: { name: string }) {
     setSegSweep,
     setDnSweep,
     setFailedPreviews,
+    setPrepFail,
     gone,
     () => setGone(true),
   );
@@ -440,6 +442,12 @@ export function PreparePage({ name }: { name: string }) {
             <SweepTable rows={segSweep} kind="segment" onSelect={setSelectedId} onPromote={(r) => void promote(r)} />
           </>
         )}
+        {prepFail && (
+          <p className="error">
+            the last full prepare ({prepFail.id}) failed: {prepFail.error} —{" "}
+            <a href={`#/project/${name}/activity`}>job log</a>
+          </p>
+        )}
         <div className="row">
           <button onClick={() => void runPrepare()}>
             run the full prepare
@@ -462,9 +470,11 @@ export function PreparePage({ name }: { name: string }) {
   );
 }
 
-// One poller for the whole page: sweep halves and failed preview jobs
+// One poller for the whole page: sweep halves, failed preview jobs
 // (finding 11 — a preview that dies writes no preview.json, so the sweep
-// alone would sit on "queued…" forever). A 404 from either endpoint means
+// alone would sit on "queued…" forever), and the outcome of the latest
+// full prepare (it can fail in under a second — e.g. deep-filter missing —
+// and without this the button looks dead). A 404 from either endpoint means
 // the project was deleted under the open tab; onGone flips the page and
 // `gone` tears this interval down, so the 404s stop instead of repeating
 // every 2 seconds behind the error message.
@@ -474,10 +484,12 @@ function useSweepPoll(
   setSeg: (rows: PreviewRow[]) => void,
   setDn: (rows: PreviewRow[]) => void,
   setFailed: (rows: { id: string; error: string }[]) => void,
+  setPrepFail: (f: { id: string; error: string } | null) => void,
   gone: boolean,
   onGone: () => void,
 ): void {
   const failFp = useRef("");
+  const prepFp = useRef("");
   useEffect(() => {
     if (gone) return; // poll stays dead once the page has flipped
     async function tick(): Promise<void> {
@@ -504,6 +516,20 @@ function useSweepPoll(
       if (ffp !== failFp.current) {
         failFp.current = ffp;
         setFailed(fails);
+      }
+      // ids are timestamp-stamped, so the last one is the newest; only a
+      // finished job counts (a queued/running one must not flash an error
+      // from its predecessor). A later success clears the failure line.
+      const lastPrep = jobs
+        .filter((j) => j.kind === "prepare"
+          && (j.state === "failed" || j.state === "succeeded"))
+        .sort((a, b) => (a.id < b.id ? 1 : -1))[0];
+      const pf = lastPrep && lastPrep.state === "failed"
+        ? { id: lastPrep.id, error: lastPrep.error ?? "unknown error" }
+        : null;
+      if ((pf?.id ?? "") !== prepFp.current) {
+        prepFp.current = pf?.id ?? "";
+        setPrepFail(pf);
       }
     }
     const t = setInterval(() => void tick(), 2000);
