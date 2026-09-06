@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, del, fileUrl, get, post, postEmpty } from "../api";
 import type { Job, Peaks, PreviewRow, Region, SourceInfo } from "../types";
 import { Wave } from "../components/Wave";
-import { Consequence } from "../shell";
+import { Consequence, Panel } from "../shell";
 
 type Ref<T> = { current: T };
 
@@ -43,11 +43,13 @@ export function PreparePage({ name }: { name: string }) {
   const sweepFp = useRef("");
 
   // ------------------------------------------------------------- sources
+  const srcFp = useRef("");
   useEffect(() => {
     let alive = true;
     get<SourceInfo[]>(`/projects/${name}/sources`)
       .then((s) => {
         if (!alive) return;
+        srcFp.current = s.map((x) => x.name).join("\n");
         setSources(s);
         if (s.length > 0) setSource(s[0].name);
       })
@@ -61,6 +63,26 @@ export function PreparePage({ name }: { name: string }) {
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
+
+  // raw/ can change while the page sits open (a manual drop, an ingest
+  // job finishing on the sources page): refresh cheaply so the body
+  // never contradicts the live gate banner above it.
+  useEffect(() => {
+    const t = setInterval(() => {
+      get<SourceInfo[]>(`/projects/${name}/sources`)
+        .then((s) => {
+          const fp = s.map((x) => x.name).join("\n");
+          if (fp === srcFp.current) return;
+          srcFp.current = fp;
+          setSources(s);
+          setSource((sel) =>
+            s.some((x) => x.name === sel) ? sel : (s[0]?.name ?? ""));
+        })
+        .catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
 
@@ -179,6 +201,7 @@ export function PreparePage({ name }: { name: string }) {
         { names: [source] },
       );
       const fresh = await get<SourceInfo[]>(`/projects/${name}/sources`);
+      srcFp.current = fresh.map((x) => x.name).join("\n");
       setSources(fresh);
       setSource(fresh[0]?.name ?? "");
       setPeaks(null);
@@ -205,154 +228,172 @@ export function PreparePage({ name }: { name: string }) {
   if (sources === null) return <p className="muted">loading…</p>;
   const hasSources = sources.length > 0;
 
+  // No sources: the shell's gate banner already says prepare is blocked;
+  // the page itself collapses to one pointer instead of a wall of
+  // disabled controls.
+  if (!hasSources) {
+    return (
+      <>
+        <h1>prepare — {name}</h1>
+        <p className="muted">
+          prepare splits raw audio into training clips{" "}
+          <a href={`#/project/${name}`}>back to project</a>
+        </p>
+        {error && <p className="error">{error}</p>}
+        {message && <p className="muted">{message}</p>}
+        <Panel title="no sources yet">
+          <p className="muted">
+            there is nothing to segment. add audio first —{" "}
+            <a href={`#/sources/${name}`}>go to sources</a>.
+          </p>
+        </Panel>
+      </>
+    );
+  }
+
   return (
     <>
-      <h1>Prepare tuner — {name}</h1>
+      <h1>prepare — {name}</h1>
       <p className="muted">
-        adjust the VAD dials, preview one source or all of them, promote the
-        winner{" "}
+        split raw audio into training clips: tune the splitter on one source,
+        check it against every source, then promote the winner to run the
+        full prepare.{" "}
         <a href={`#/project/${name}`}>back to project</a>
       </p>
       {error && <p className="error">{error}</p>}
       {message && <p className="muted">{message}</p>}
 
-      <p className="row">
-        <button onClick={() => void runPrepare()}>run prepare</button>
-        <span className="muted">replays the promoted tuner settings</span>
-      </p>
-      <Consequence>
-        re-prepare re-segments sources; existing clips and transcripts are
-        kept for unchanged sources
-      </Consequence>
-
-      <h2>Source</h2>
-      <div className="row">
-        <select
-          value={source}
-          onChange={(e) => setSource(e.target.value)}
-        >
-          {sources.map((s) => (
-            <option key={s.name} value={s.name}>
-              {s.name}
-            </option>
+      <Panel
+        title="1 · pick a source"
+        help="a source is one raw audio file. listen before tuning — a badly recorded file yields no clips at any setting. delete moves it to .trash, so a mistyped click is recoverable."
+      >
+        <div className="row">
+          <select
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+          >
+            {sources.map((s) => (
+              <option key={s.name} value={s.name}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+          {["downmix", "left", "right"].map((c) => (
+            <label className="inline" key={c}>
+              <input
+                type="radio"
+                name="chan"
+                value={c}
+                checked={channel === c}
+                onChange={() => setChannel(c)}
+              />
+              {c}
+            </label>
           ))}
-        </select>
-        {["downmix", "left", "right"].map((c) => (
-          <label className="inline" key={c}>
-            <input
-              type="radio"
-              name="chan"
-              value={c}
-              checked={channel === c}
-              onChange={() => setChannel(c)}
-            />
-            {c}
-          </label>
-        ))}
-        {hasSources && source !== "" && (
-          <>
-            <span className="muted">play source</span>
-            <audio
-              controls
-              key={source}
-              src={fileUrl(name, "raw", source)}
-              style={{ width: "16em" }}
-            />
-          </>
-        )}
-        <button disabled={!source} onClick={() => void deleteCurrent()}>
-          delete this source
-        </button>
-      </div>
-      {hasSources ? (
+          {source !== "" && (
+            <>
+              <span className="muted">play source</span>
+              <audio
+                controls
+                key={source}
+                src={fileUrl(name, "raw", source)}
+                style={{ width: "16em" }}
+              />
+            </>
+          )}
+          <button disabled={!source} onClick={() => void deleteCurrent()}>
+            delete this source
+          </button>
+        </div>
         <Wave data={peaks} regions={regions} />
-      ) : (
-        <p className="muted">
-          no sources — <a href={`#/sources/${name}`}>add audio on the sources page</a> first
-        </p>
-      )}
+      </Panel>
 
-      <h2>VAD parameters</h2>
-      <div className="row" style={{ flexWrap: "wrap" }}>
-        {SLIDERS.map((s) => (
-          <label className="inline" key={s.key}>
-            {s.label}
+      <Panel
+        title="2 · tune the splitter"
+        help="preview segment cuts only the selected source with the current dials; apply to all runs the same dials over every source and reports per-source clip counts. previews are experiments — nothing is written to the dataset here."
+      >
+        <div className="row" style={{ flexWrap: "wrap" }}>
+          {SLIDERS.map((s) => (
+            <label className="inline" key={s.key}>
+              {s.label}
+              <input
+                type="range"
+                min={s.min}
+                max={s.max}
+                step={s.step}
+                value={dials[s.key]}
+                style={{ width: "14em" }}
+                onChange={(e) =>
+                  setDials((d) => ({ ...d, [s.key]: parseFloat(e.target.value) }))
+                }
+              />
+              <span className="muted">{dials[s.key]}</span>
+            </label>
+          ))}
+          <label
+            className="inline"
+            title="the full pipeline denoises before segmenting; previews should judge the same audio"
+          >
             <input
-              type="range"
-              min={s.min}
-              max={s.max}
-              step={s.step}
-              value={dials[s.key]}
-              style={{ width: "14em" }}
-              onChange={(e) =>
-                setDials((d) => ({ ...d, [s.key]: parseFloat(e.target.value) }))
-              }
+              type="checkbox"
+              checked={denoiseFirst}
+              onChange={(e) => setDenoiseFirst(e.target.checked)}
             />
-            <span className="muted">{dials[s.key]}</span>
+            denoise first
           </label>
+        </div>
+        <div className="row">
+          <button onClick={() => void preview("segment")}>
+            preview segment
+          </button>
+          <button
+            title="run the current dials against every source and report per-source clip counts"
+            onClick={() => void preview("segment-all")}
+          >
+            apply to all (preview)
+          </button>
+        </div>
+
+        {failedPreviews.map((f) => (
+          <p className="error" key={f.id}>
+            preview job {f.id} failed: {f.error || "unknown error"}
+          </p>
         ))}
-        <label
-          className="inline"
-          title="the full pipeline denoises before segmenting; previews should judge the same audio"
-        >
-          <input
-            type="checkbox"
-            checked={denoiseFirst}
-            onChange={(e) => setDenoiseFirst(e.target.checked)}
+
+        {selected && selected.stage !== "denoise" ? (
+          <SelectedClips
+            row={selected}
+            project={name}
+            energy={dials.energy_threshold}
+            onApplyThreshold={(v) =>
+              setDials((d) => ({ ...d, energy_threshold: v }))}
           />
-          denoise first
-        </label>
-      </div>
-      <div className="row">
-        <button disabled={!hasSources} onClick={() => void preview("segment")}>
-          preview segment
-        </button>
-        <button
-          disabled={!hasSources}
-          title="run the current dials against every source and report per-source clip counts"
-          onClick={() => void preview("segment-all")}
-        >
-          apply to all (preview)
-        </button>
-        <button disabled={!hasSources} onClick={() => void preview("denoise")}>
-          preview denoise A/B
-        </button>
-      </div>
+        ) : (
+          <p className="muted">preview results appear here</p>
+        )}
+      </Panel>
 
-      {failedPreviews.map((f) => (
-        <p className="error" key={f.id}>
-          preview job {f.id} failed: {f.error || "unknown error"}
-        </p>
-      ))}
-
-      <h2>Clips</h2>
-      {selected === null ? (
-        <p className="muted">
-          click a preview id below to inspect its clips here
-        </p>
-      ) : (
-        <SelectedClips
-          row={selected}
-          project={name}
-          energy={dials.energy_threshold}
-          onApplyThreshold={(v) =>
-            setDials((d) => ({ ...d, energy_threshold: v }))}
-        />
-      )}
-
-      <h2>Segment sweep</h2>
-      {segSweep.length === 0 ? (
-        <p className="muted">no segment previews yet</p>
-      ) : (
-        <SweepTable rows={segSweep} kind="segment" onSelect={setSelectedId} onPromote={(r) => void promote(r)} />
-      )}
-
-      <h2>Denoise A/B</h2>
-      {dnSweep.length === 0 ? (
-        <p className="muted">no denoise previews yet</p>
-      ) : (
-        <>
-          <SweepTable rows={dnSweep} kind="denoise" onSelect={setSelectedId} onPromote={null} />
+      <Panel
+        title="3 · denoise a/b (optional)"
+        help="the full pipeline denoises before segmenting (the checkbox above). this previews 25 seconds of the selected source before and after denoise so you can hear what it does."
+      >
+        <div className="row">
+          <button onClick={() => void preview("denoise")}>
+            preview denoise A/B
+          </button>
+        </div>
+        {selected?.stage === "denoise" && (
+          <SelectedClips
+            row={selected}
+            project={name}
+            energy={dials.energy_threshold}
+            onApplyThreshold={(v) =>
+              setDials((d) => ({ ...d, energy_threshold: v }))}
+          />
+        )}
+        {dnSweep.length === 0 ? (
+          <p className="muted">no denoise previews yet</p>
+        ) : (
           <div className="grid">
             {dnSweep.slice(0, 3).map((row) => (
               <div className="cell" key={row.id}>
@@ -378,12 +419,45 @@ export function PreparePage({ name }: { name: string }) {
               </div>
             ))}
           </div>
-        </>
-      )}
+        )}
+      </Panel>
 
-      <p>
-        <button onClick={() => void prune()}>prune all previews</button>
-      </p>
+      <Panel
+        title="4 · run the full prepare"
+        help="nothing reaches the dataset until a full prepare runs. promote replays a preview's exact dials over every source and writes the clips; run prepare below replays the most recently promoted dials."
+      >
+        {segSweep.length === 0 ? (
+          <p className="muted">
+            no segment previews yet — tune and preview above, then promote
+            the winner here
+          </p>
+        ) : (
+          <>
+            <p className="muted">
+              click an id to re-inspect its clips in the tuner above;
+              promote the winner to run the full prepare with its dials:
+            </p>
+            <SweepTable rows={segSweep} kind="segment" onSelect={setSelectedId} onPromote={(r) => void promote(r)} />
+          </>
+        )}
+        <div className="row">
+          <button onClick={() => void runPrepare()}>
+            run the full prepare
+          </button>
+          <span className="muted">
+            replays the promoted dials — defaults if nothing was promoted yet
+          </span>
+        </div>
+        <Consequence>
+          re-prepare re-segments sources; existing clips and transcripts are
+          kept for unchanged sources
+        </Consequence>
+        <p>
+          <button className="ghost" onClick={() => void prune()}>
+            prune all previews
+          </button>
+        </p>
+      </Panel>
     </>
   );
 }
