@@ -6,7 +6,8 @@
 #   ./run.sh doctor
 #   ./run.sh init /workspace/marvin --name marvin
 #   ./run.sh prepare /workspace/marvin --tier medium
-#   ./run.sh serve                        # API + Bones UI on :8000
+#   ./run.sh serve                        # API + Bones UI on :8000 (next free
+#                                         #   port if busy; API_PORT pins it)
 #
 # Handles the runtime differences that compose files get wrong:
 #   - rootless podman: no --user (host UID already maps to container root);
@@ -23,7 +24,8 @@
 #   VARIANT    rocm | cuda | cpu                       (default: rocm)
 #   IMAGE      override the full image reference
 #   ENGINE     podman | docker                         (default: autodetect)
-#   API_PORT   host port for `serve`                   (default: 8000)
+#   API_PORT   host port for `serve`                   (default: 8000; unset
+#                        + busy -> first free port upward)
 #   ROCM_TORCH_VERSION   torch pin for `build`         (default: 2.10.0; must
 #                        exist on the rolling gfx1151 index — see Dockerfile)
 #   SHELL_IN   set to 1 to drop into a shell instead of running the CLI
@@ -122,12 +124,38 @@ args+=(--shm-size 8g)
 # `./run.sh serve` publishes API_PORT and defaults the container-internal
 # listener to 0.0.0.0 (127.0.0.1 inside a container is unreachable from the
 # host). An explicit --host on the command line always wins.
+#
+# Host port: 8000 by default. With API_PORT UNSET, a busy port shifts the
+# publish to the next free one (8001, 8002, ...) and says so — 8000 is
+# everyone's default and conflicts are routine. An explicit API_PORT is
+# used verbatim instead: pinning means pinning, and docker fails loudly
+# on a busy pinned port rather than quietly serving elsewhere.
 # The publish target on the HOST side defaults to 127.0.0.1: the API has no
 # auth and can spawn jobs, so it is not offered to the LAN by default. Set
 # API_BIND=0.0.0.0 to expose it to your network deliberately (design §7:
 # the supported path is localhost / VPN).
+
+# bash-only probe; no nc/lsof dependency. A connect that succeeds means
+# something is listening.
+port_busy() {
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
 if [[ "${1:-}" == "serve" ]]; then
-    args+=(-p "${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000")
+    host_port="${API_PORT:-8000}"
+    if [[ -z "${API_PORT:-}" ]]; then
+        for _ in {1..100}; do
+            port_busy "$host_port" || break
+            host_port=$((host_port + 1))
+        done
+        if port_busy "$host_port"; then
+            echo "no free port in 8000-8099; set API_PORT explicitly" >&2
+            exit 1
+        fi
+        [[ "$host_port" == 8000 ]] || \
+            echo "note: 8000 busy — publishing the UI/API on port ${host_port} instead (set API_PORT to pin it)" >&2
+    fi
+    args+=(-p "${API_BIND:-127.0.0.1}:${host_port}:8000")
     host_set=0
     for a in "$@"; do
         case "$a" in --host|--host=*) host_set=1 ;; esac

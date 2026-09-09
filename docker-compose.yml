@@ -21,6 +21,8 @@ x-common: &common
   stdin_open: true
   tty: true
   # used by `serve` (API + Bones UI); publish with --service-ports
+  # NOTE: compose cannot auto-shift a busy port the way run.sh does —
+  # if 8000 is taken, set API_PORT explicitly.
   ports:
     - "${API_PORT:-8000}:8000"
 

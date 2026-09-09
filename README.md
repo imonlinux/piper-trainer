@@ -39,10 +39,12 @@ environment.
 
 ## Build
 
-`./run.sh build` builds the current `VARIANT` (default rocm) with the right index and pin — extra args pass through (`./run.sh build --no-cache`, `--pull`):
+`./run.sh build` builds the current `VARIANT` with the right index and pin — extra args pass through (`./run.sh build --no-cache`, `--pull`):
 
 ```bash
-./run.sh build
+./run.sh build                    # VARIANT=rocm (default) — AMD gfx1151
+VARIANT=cuda ./run.sh build       # NVIDIA
+VARIANT=cpu  ./run.sh build       # CPU fallback
 ```
 
 Compose profiles and raw builds work too:
@@ -72,10 +74,29 @@ Use `./run.sh` — it handles the runtime differences that trip up compose files
 
 ```bash
 export WORKSPACE=/path/to/voice-training
-./run.sh doctor                      # VARIANT=rocm by default
-VARIANT=cuda ./run.sh doctor
-SHELL_IN=1 ./run.sh                  # drop into a shell for poking around
+VARIANT=cuda ./run.sh doctor         # NVIDIA box — set VARIANT on every run.sh call
+./run.sh doctor                      # AMD gfx1151 — VARIANT=rocm is the default
+SHELL_IN=1 VARIANT=cuda ./run.sh     # drop into a shell for poking around
 ```
+
+### One image per hardware profile
+
+`VARIANT` (rocm | cuda | cpu) selects which local image every `run.sh`
+command runs; the default is **rocm**. It must name an image you have
+actually built, on hardware you actually have. `run.sh` never pulls from
+a registry — if the image is missing, docker falls back to attempting a
+pull and fails with `pull access denied for piper-trainer`. That error
+means "wrong or missing VARIANT", not "run docker login".
+
+| VARIANT | Image | Hardware | GPU passthrough |
+|---|---|---|---|
+| `rocm` (default) | `piper-trainer:rocm` | AMD Strix Halo / gfx1151 | `/dev/kfd` + `/dev/dri`, render GIDs |
+| `cuda` | `piper-trainer:cuda` | NVIDIA (+ Container Toolkit) | `--gpus all` |
+| `cpu` | `piper-trainer:cpu` | anything | none — works everywhere, slow |
+
+The wrong variant fails cleanly: the rocm image without `/dev/kfd`, or on
+an NVIDIA box, reports `GPU available (0 devices)` in `doctor`; the cuda
+image needs the NVIDIA Container Toolkit installed on the host.
 
 <details>
 <summary>What run.sh handles, and why compose can't</summary>
@@ -293,19 +314,38 @@ pip install -e '.[api]'
 piper-trainer serve                      # http://127.0.0.1:8000/
 ```
 
-The training images carry the api runtime too, so the same thing works from the image:
+The training images carry the api runtime too, so the same thing works from the image. `serve` uses `VARIANT` exactly like every other `run.sh` command — prefix it to match the image you built:
 
 ```bash
-./run.sh serve                           # http://localhost:8000/ (API_PORT to change)
+VARIANT=cuda ./run.sh serve              # NVIDIA (VARIANT=rocm is the default; drop the prefix on AMD gfx1151)
+                                         # → http://localhost:8000/
+VARIANT=cpu  ./run.sh serve              # CPU-only fallback
 ```
 
-The API has no authentication, so `run.sh serve` publishes it to **127.0.0.1 on the host only**. To reach it from another machine (the LAN case), set `API_BIND=0.0.0.0` and put your own protection in front of it — the supported path is localhost or a VPN.
+The container always listens on **8000** internally; `run.sh` publishes it
+on the host at `${API_BIND:-127.0.0.1}:<host port>`. The host port is
+`API_PORT` (default **8000**), with one convenience: if `API_PORT` is
+unset and 8000 is already taken, serve shifts to the next free port
+(8001, 8002, …) and prints a one-line notice — the URL it names is the
+one to open. Set `API_PORT` explicitly to pin the port instead; a pinned
+port that is busy fails loudly rather than moving. (Compose has no
+auto-shift — set `API_PORT` there.) If serve dies with
+`Unable to find image 'piper-trainer:rocm' locally` followed by
+`pull access denied for piper-trainer`, that is a different problem: you
+asked for a variant you never built — either set `VARIANT` to the one you
+built or create the missing one with `./run.sh build` first.
 
-run.sh is the supported launcher — it picks the right UID mapping, GPU groups, and SELinux labels for podman vs docker. Prefer it over `compose run`: under rootless podman, compose's fixed `user:` line makes `/workspace` unwritable, and its numeric render-GID default is Debian's, not your distro's — the two failures `doctor` reports as *not writable* and *GPU available (0 devices)*. On rootful docker the compose form also works:
+The API has no authentication, so `run.sh serve` publishes it to **127.0.0.1 on the host only**. To reach it from another machine (the LAN case), set `API_BIND=0.0.0.0` and put your own protection in front of it — the supported path is localhost or a VPN. Note the compose form below has no such default: its `ports:` mapping binds **all interfaces** as soon as you pass `--service-ports`.
+
+run.sh is the supported launcher — it picks the right UID mapping, GPU groups, and SELinux labels for podman vs docker. Prefer it over `compose run`: under rootless podman, compose's fixed `user:` line makes `/workspace` unwritable, and its numeric render-GID default is Debian's, not your distro's — the two failures `doctor` reports as *not writable* and *GPU available (0 devices)*. On rootful docker the compose form also works, one service per profile:
 
 ```bash
 docker compose --profile rocm run --rm --service-ports trainer-rocm serve --host 0.0.0.0
+docker compose --profile cuda run --rm --service-ports trainer-cuda serve --host 0.0.0.0
+docker compose --profile cpu  run --rm --service-ports trainer-cpu serve --host 0.0.0.0
 ```
+
+(`--service-ports` publishes the `ports:` block from `x-common`, host port `${API_PORT:-8000}` → container 8000; unlike `run.sh` it does not auto-shift on a busy port, and it binds **all interfaces** — `API_BIND` is a `run.sh`-only convenience.)
 
 The React UI is served at `/` (`/ui/`) — project list and detail, upload, checkpoint picker, run/cancel buttons, the prepare tuner with waveform previews, and a live log tail. Sources live in `ui-src/` (Vite + React + TypeScript); the built bundle is not committed — the image builds it, and local `npm run build` inside `ui-src/` writes it straight into `src/piper_trainer/ui/`.
 
