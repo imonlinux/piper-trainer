@@ -144,6 +144,7 @@ function IdentityBar(props: {
       <a href="#/projects">← projects</a>
       <strong>{props.name}</strong>
       {data && <span className="tag">{data.project.voice}</span>}
+      <a href={`#/project/${props.name}/activity`}>activity</a>
       <span className="status-line">{line}</span>
       <span className="spacer" />
       <ThemeToggle />

@@ -1,17 +1,30 @@
 import { useEffect, useState } from "react";
 import { get, post } from "../api";
-import type { Catalog, ProjectSummary } from "../types";
+import type { Catalog, EspeakVoices, ProjectSummary } from "../types";
 
 // Project creation with the checkpoint picker (§3): language -> locale ->
 // voice -> quality cascades over the HF catalog, live with snapshot
 // fallback (decision §8.6). The derived settings written here are what
 // every later screen depends on.
 
+// locale is e.g. en_GB; the espeak voice must exist in piper1-gpl's
+// vendored espeak-ng data, which has no plain "en-gb" — the official
+// en_GB checkpoints all train with "en-gb-x-rp" (checked: alan, alba,
+// jenny_dioco, northern_english_male, semaine). en_US derives to the
+// still-valid "en-us"; other locales keep the mechanical name.
+export function derivedEspeak(locale: string): string {
+  return locale === "en_GB"
+    ? "en-gb-x-rp"
+    : locale.replace("_", "-").toLowerCase();
+}
+
 export function NewProjectPage() {
   const [cat, setCat] = useState<Catalog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [espeak, setEspeak] = useState("");
+  const [espeakOpts, setEspeakOpts] = useState<string[]>([]);
+  const [espeakSource, setEspeakSource] = useState("");
   const [lang, setLang] = useState("");
   const [locale, setLocale] = useState("");
   const [voice, setVoice] = useState("");
@@ -45,6 +58,44 @@ export function NewProjectPage() {
       alive = false;
     };
   }, []);
+
+  // The espeak voice is a selector, not free text, and it is constrained
+  // by the checkpoint picked above: the options come from piper's own
+  // bundled espeak data (the data training actually phonemizes with —
+  // the system espeak-ng offers voices like plain en-gb that die on the
+  // first phonemize). Constraint ladder: exact locale match first
+  // (en-gb*), then the language family (en*), then everything.
+  useEffect(() => {
+    if (!locale) return;
+    let alive = true;
+    const derived = derivedEspeak(locale);
+    const locPrefix = locale.replace("_", "-").toLowerCase();
+    const famPrefix = locale.split("_")[0].toLowerCase();
+    get<EspeakVoices>("/espeak-voices")
+      .then((r) => {
+        if (!alive) return;
+        setEspeakSource(r.source);
+        let opts = r.voices.filter((v) => v.startsWith(locPrefix));
+        if (opts.length === 0) opts = r.voices.filter((v) => v.startsWith(famPrefix));
+        if (opts.length === 0) opts = r.voices.slice();
+        if (opts.length === 0) {
+          setEspeakOpts([derived]);
+          setEspeak(derived);
+          return;
+        }
+        setEspeakOpts(opts);
+        setEspeak(opts.includes(derived) ? derived : opts[0]);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setEspeakSource("none");
+        setEspeakOpts([derived]);
+        setEspeak(derived);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [locale]);
 
   if (error) {
     return (
@@ -95,15 +146,7 @@ export function NewProjectPage() {
   async function submit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     setError(null);
-    // locale is e.g. en_GB; the espeak voice must exist in piper1-gpl's
-    // vendored espeak-ng data, which has no plain "en-gb" — the official
-    // en_GB checkpoints all train with "en-gb-x-rp" (checked: alan, alba,
-    // jenny_dioco, northern_english_male, semaine). en_US derives to the
-    // still-valid "en-us"; other locales keep the mechanical name.
-    const derived =
-      locale === "en_GB" ? "en-gb-x-rp"
-      : locale.replace("_", "-").toLowerCase();
-    const espeakVoice = espeak || derived;
+    const espeakVoice = espeak || derivedEspeak(locale);
     setSubmitting(true);
     try {
       const p = await post<ProjectSummary>("/projects", {
@@ -192,13 +235,33 @@ export function NewProjectPage() {
             </option>
           ))}
         </select>
-        <label>espeak voice (editable)</label>
-        <input
-          type="text"
-          placeholder="en-us"
-          value={espeak}
-          onChange={(e) => setEspeak(e.target.value)}
-        />
+        <label>espeak voice</label>
+        <select value={espeak} onChange={(e) => setEspeak(e.target.value)}>
+          {espeakOpts.map((v) => (
+            <option key={v} value={v}>
+              {v}
+              {v === derivedEspeak(locale) && locale
+                ? ` (derived from ${locale})`
+                : ""}
+            </option>
+          ))}
+        </select>
+        {espeakSource === "piper" ? (
+          <p className="muted">
+            choices come from piper's bundled espeak data — what training
+            actually phonemizes with
+          </p>
+        ) : espeakSource === "system" ? (
+          <p className="muted">
+            piper's bundled espeak data is unavailable on this host; listing
+            system espeak-ng voices, which may include voices piper cannot
+            load
+          </p>
+        ) : espeakSource === "none" ? (
+          <p className="muted">
+            no espeak voice list available; using the mechanical default
+          </p>
+        ) : null}
         <p>
           <button type="submit" disabled={submitting}>
             create

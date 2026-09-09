@@ -269,6 +269,10 @@ header.identity details.overflow .overflow-menu a { color: var(--fg); text-decor
 }
 .consequence { color: var(--fg-dim); font-size: 13px; margin: 6px 0; }
 
+/* definition editor (project.json on the overview) */
+.defval { word-break: break-word; }
+.def-edit { width: 100%; }
+
 /* next card */
 .next-card { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
 .next-why { flex: 1 1 260px; margin: 0; font-size: 15px; }

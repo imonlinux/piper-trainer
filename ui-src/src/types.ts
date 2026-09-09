@@ -54,11 +54,21 @@ export interface ProjectConfig {
 
 export interface ProjectDetail extends ProjectSummary {
   config: ProjectConfig;
+  // Full project.json as written; the editable surface on the overview.
+  definition?: Record<string, unknown>;
   directories: Record<string, number>;
   dataset: { rows: number; malformed_lines: number; line_endings: string | null };
   voices: string[];
   checkpoints: unknown[];
   jobs: Job[];
+}
+
+// GET /api/espeak-voices: the voice names piper phonemizes with, plus
+// where the list came from ("piper" = bundled espeak-ng data, "system" =
+// system espeak-ng fallback, "none" = no list available).
+export interface EspeakVoices {
+  source: "piper" | "system" | "none" | string;
+  voices: string[];
 }
 
 export interface SourceInfo {
