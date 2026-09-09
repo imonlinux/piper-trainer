@@ -96,3 +96,38 @@ def espeak_voices(prefix: str = "") -> list[str]:
         if len(parts) > 1 and parts[1].startswith(prefix):
             names.append(parts[1])
     return names
+
+
+def piper_espeak_voices() -> list[str] | None:
+    """Voice names from the espeak-ng data piper1-gpl actually phonemizes
+    with: the copy bundled inside the installed `piper` package (see
+    piper/phonemize_espeak.py). This is not the system espeak-ng — the
+    bundled data has no plain en-gb, which is how a British project could
+    pass every check and die on the first phonemize. A voice's name is the
+    `language` directive of its voice file (what espeak-ng --voices lists
+    and SetVoiceByName resolves), falling back to the file stem; the branch
+    directory (lang/gmw/) is never part of the name. None means the
+    bundled data is not importable here and the caller should fall back
+    to the system voice list."""
+    try:
+        from piper.phonemize_espeak import ESPEAK_DATA_DIR
+    except Exception:  # noqa: BLE001 — any import failure means: fall back
+        return None
+    lang = Path(ESPEAK_DATA_DIR) / "lang"
+    if not lang.is_dir():
+        return None
+    names: set[str] = set()
+    for f in lang.rglob("*"):
+        if not f.is_file():
+            continue
+        ident = ""
+        try:
+            for line in f.read_text(errors="replace").splitlines():
+                line = line.strip()
+                if line.startswith("language "):
+                    ident = line.split(None, 1)[1].strip()
+                    break
+        except OSError:
+            continue
+        names.add((ident or f.stem).lower())
+    return sorted(names)

@@ -83,14 +83,25 @@ def test_doctor_structured(client, monkeypatch):
 
 
 def test_espeak_voices(client, monkeypatch):
-    monkeypatch.setattr(doctor, "espeak_voices", lambda prefix="": ["en-us"])
-    assert client.get("/api/espeak-voices").json() == ["en-us"]
-    assert client.get("/api/espeak-voices?prefix=en").json() == ["en-us"]
+    # piper's bundled data wins when importable; system espeak-ng is the
+    # flagged fallback; no list at all degrades to source "none".
+    monkeypatch.setattr(doctor, "piper_espeak_voices",
+                        lambda: ["de", "en-gb-x-rp", "en-us"])
+    body = client.get("/api/espeak-voices?prefix=en").json()
+    assert body == {"source": "piper",
+                    "voices": ["en-gb-x-rp", "en-us"]}
+
+    monkeypatch.setattr(doctor, "piper_espeak_voices", lambda: None)
+    monkeypatch.setattr(doctor, "espeak_voices",
+                        lambda prefix="": ["en-us", "en-gb"])
+    body = client.get("/api/espeak-voices?prefix=en-gb").json()
+    assert body == {"source": "system", "voices": ["en-gb"]}
 
     def boom(prefix=""):
         raise FileNotFoundError("espeak-ng")
     monkeypatch.setattr(doctor, "espeak_voices", boom)
-    assert client.get("/api/espeak-voices").json() == []
+    assert client.get("/api/espeak-voices").json() == {"source": "none",
+                                                       "voices": []}
 
 
 # ---------------------------------------------------------------- projects
@@ -110,6 +121,7 @@ def test_project_crud_roundtrip(client):
 
     detail = client.get("/api/projects/hal_9000").json()
     assert detail["config"]["espeak_voice"] == "en-us"
+    assert detail["definition"]["espeak_voice"] == "en-us"
     assert detail["directories"]["raw"] == 0
     assert detail["dataset"]["rows"] == 0
 
@@ -124,6 +136,54 @@ def test_project_id_validation(client, tmp_path):
     (tmp_path / "evil").mkdir()
     # path traversal via the id is refused before any filesystem touch
     assert client.get("/api/projects/../secret").status_code in (400, 404)
+
+
+def test_definition_patch(client, tmp_path):
+    client.post("/api/projects", json={"name": "hal", "espeak_voice": "en-us"})
+
+    # set: new keys and type changes, including an existing key fix
+    r = client.patch("/api/projects/hal/definition",
+                     json={"updates": {"espeak_voice": "en-gb-x-rp",
+                                       "target_epochs": 1200,
+                                       "transcripts_provided": True}})
+    assert r.status_code == 200
+    assert r.json()["definition"]["espeak_voice"] == "en-gb-x-rp"
+    assert r.json()["definition"]["target_epochs"] == 1200
+    assert r.json()["definition"]["transcripts_provided"] is True
+    # written through to project.json, not just echoed
+    on_disk = json.loads((tmp_path / "hal" / "project.json").read_text())
+    assert on_disk["espeak_voice"] == "en-gb-x-rp"
+
+    # null removes; removing a missing key is a no-op, not an error
+    r = client.patch("/api/projects/hal/definition",
+                     json={"updates": {"target_epochs": None,
+                                       "never_there": None}})
+    assert r.status_code == 200
+    assert "target_epochs" not in r.json()["definition"]
+
+    # name is the directory's identity: refused
+    assert client.patch("/api/projects/hal/definition",
+                        json={"updates": {"name": "marvin"}}).status_code == 400
+    assert client.patch("/api/projects/hal/definition",
+                        json={"updates": {"name": "hal"}}).status_code == 200
+
+    # key shape: anything that could confuse readers/writers is refused
+    for bad in ("a b", "", "1x", "x/y"):
+        assert client.patch("/api/projects/hal/definition",
+                            json={"updates": {bad: 1}}).status_code == 400
+
+    # a running job pins the file: 409, nothing written
+    jd = tmp_path / "hal" / "jobs" / "20260901T000000Z-train-abc9"
+    jd.mkdir(parents=True, exist_ok=True)
+    (jd / "job.json").write_text(json.dumps({
+        "id": jd.name, "kind": "train", "project": "hal", "params": {},
+        "state": "running", "pid": None,
+    }))
+    r = client.patch("/api/projects/hal/definition",
+                     json={"updates": {"espeak_voice": "en-us"}})
+    assert r.status_code == 409
+    on_disk = json.loads((tmp_path / "hal" / "project.json").read_text())
+    assert on_disk["espeak_voice"] == "en-gb-x-rp"
 
 
 def test_project_file_serving_scoped(client):

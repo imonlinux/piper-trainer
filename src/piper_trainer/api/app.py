@@ -46,6 +46,11 @@ class ProjectCreate(BaseModel):
     catalog_path: str | None = None
 
 
+class DefinitionPatch(BaseModel):
+    """project.json fixes from the UI: keys to set, None to remove."""
+    updates: dict
+
+
 class JobCreate(BaseModel):
     kind: str
     stage: str | None = None
@@ -204,10 +209,22 @@ def create_app(workspace: Path | None = None,
 
     @app.get("/api/espeak-voices")
     def espeak_voices(prefix: str = ""):
-        try:
-            return doctor.espeak_voices(prefix)
-        except (FileNotFoundError, RuntimeError, subprocess.CalledProcessError):
-            return []  # doctor reports the missing or failing binary
+        # Prefer the espeak-ng data bundled inside piper1-gpl: that is the
+        # data training phonemizes with, and it disagrees with the system
+        # espeak-ng (no plain en-gb). The system list is the fallback for
+        # hosts where piper is not importable (e.g. the UI served without
+        # the training stack), flagged via `source` so the UI can say so.
+        voices = doctor.piper_espeak_voices()
+        source = "piper"
+        if voices is None:
+            source = "system"
+            try:
+                voices = doctor.espeak_voices("")
+            except (FileNotFoundError, RuntimeError,
+                    subprocess.CalledProcessError):
+                return {"source": "none", "voices": []}
+        return {"source": source,
+                "voices": [v for v in voices if v.startswith(prefix.lower())]}
 
     @app.get("/api/tiers")
     def tiers():
@@ -266,6 +283,7 @@ def create_app(workspace: Path | None = None,
             "config": {k: proj.get(k) for k in
                        ("espeak_voice", "tier", "catalog_path",
                         "target_epochs", "transcripts_provided")},
+            "definition": proj.meta(),
             "directories": {
                 "raw": count_audio(proj.raw),
                 "work/48k": count(proj.work48k),
@@ -285,6 +303,33 @@ def create_app(workspace: Path | None = None,
             "checkpoints": local_checkpoints(proj),
             "jobs": manager().list_for_project(proj.root)[:10],
         }
+
+    @app.patch("/api/projects/{project_id}/definition")
+    def patch_definition(project_id: str, body: DefinitionPatch):
+        """Fix project.json entries. `name` is the directory's identity and
+        stays immutable; a null value removes the key. Blocked while jobs
+        are active: prepare's promote path and the trainer both read this
+        file, and a fix racing a run is a lost update waiting to happen."""
+        proj = project_or_404(project_id)
+        running = [j for j in manager().list_for_project(proj.root)
+                   if j["state"] in ("running", "queued")]
+        if running:
+            raise HTTPException(409, "project has active jobs: "
+                                + ", ".join(j["id"] for j in running))
+        bad = [k for k in body.updates
+               if not re.match(r"^[A-Za-z_][A-Za-z0-9_.-]*$", str(k))]
+        if bad:
+            raise HTTPException(400, f"invalid key(s): {', '.join(bad)}")
+        if "name" in body.updates and body.updates["name"] != proj.name:
+            raise HTTPException(400, "name is immutable")
+        for key, value in body.updates.items():
+            if value is None:
+                data = proj.meta()
+                data.pop(key, None)
+                proj.meta_path.write_text(json.dumps(data, indent=2))
+            else:
+                proj.set(**{key: value})
+        return {"definition": proj.meta()}
 
     @app.get("/api/projects/{project_id}/stages")
     def project_stages(project_id: str):

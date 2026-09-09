@@ -316,7 +316,15 @@ FastAPI. All paths relative to `/api`.
 ```
 GET  /health                    → {ok, version}
 GET  /doctor                    → the doctor checks as structured JSON
-GET  /espeak-voices?prefix=en   → ["en-us", "en-gb", "en-gb-x-rp", ...]
+GET  /espeak-voices?prefix=en-gb → {source, voices} — source is "piper"
+                                   (the espeak-ng data bundled inside
+                                   piper1-gpl, what training actually
+                                   phonemizes with), "system" (system
+                                   espeak-ng fallback), or "none"
+PATCH /projects/{id}/definition → {updates: {key: value}} — project.json
+                                   fixes from the overview; null removes
+                                   a key; `name` is immutable; 409 while
+                                   jobs are active
 GET  /tiers                     → tier names, sample rates, architecture params
 ```
 
