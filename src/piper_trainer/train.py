@@ -125,6 +125,20 @@ def build_command(
         "--trainer.logger.dict_kwargs", json.dumps({"save_dir": str(rd)}),
     ]
 
+    # Lightning logs every 50 steps and warns when an epoch has fewer
+    # batches than that (an 84-clip baseline at batch 32 is 2 steps per
+    # epoch). Scale the interval to the dataset: step metrics still land
+    # in metrics.csv and the warning cannot be mistaken for a crash.
+    try:
+        n_rows = sum(1 for line in project.metadata.read_text(
+            errors="replace").splitlines() if line.strip())
+    except OSError:
+        n_rows = 0
+    steps_per_epoch = max(
+        1, int(n_rows * (1 - validation_split)) // max(1, batch_size))
+    if steps_per_epoch < 50:
+        cmd += ["--trainer.log_every_n_steps", str(steps_per_epoch)]
+
     for key, value in spec["model_args"].items():
         cmd += [f"--model.{key}", value]
 

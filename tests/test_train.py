@@ -46,6 +46,26 @@ def test_build_command_selects_the_csv_logger(tmp_path):
     assert kwargs == {"save_dir": str(proj.runs("medium"))}
 
 
+def test_log_interval_scales_to_small_datasets(tmp_path):
+    # An 84-clip baseline at batch 32 is 2 steps per epoch; Lightning's
+    # 50-step logging interval then warns in a way that reads as a
+    # crash. Small dataset -> the interval drops to steps-per-epoch; a
+    # real dataset keeps the default (flag absent).
+    proj = make_project(tmp_path)
+    proj.ensure()
+    proj.metadata.write_text(
+        "".join(f"c{i}|hello world {i}\n" for i in range(84)))
+    cmd = build_command(proj, tier="medium", batch_size=32)
+    # int(84 * 0.98) // 32 == 2
+    assert flag_value(cmd, "--trainer.log_every_n_steps") == "2"
+
+    proj.metadata.write_text(
+        "".join(f"c{i}|hello world {i}\n" for i in range(2000)))
+    cmd = build_command(proj, tier="medium", batch_size=32)
+    # int(2000 * 0.98) // 32 == 61 >= 50 -> Lightning's default stands
+    assert "--trainer.log_every_n_steps" not in cmd
+
+
 def test_low_and_high_tiers_emit_their_architecture_flags(tmp_path):
     for tier in ("low", "high"):
         cmd = build_command(make_project(tmp_path), tier=tier)
