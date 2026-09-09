@@ -102,6 +102,11 @@ def compute(proj: config.Project, jobs: list[dict]) -> dict:
     if proj.metadata.exists():
         rows, _ = metadata_mod.read(proj.metadata)
     n_rows = len(rows)
+    # transcribe's INPUT is the prepared clips, not metadata.csv — that
+    # file is transcribe's OUTPUT. Gating on rows locked the stage right
+    # after a successful prepare.
+    n_wavs = (sum(1 for p in proj.wavs.glob("*.wav"))
+              if proj.wavs.exists() else 0)
     n_src = (sum(1 for p in proj.raw.iterdir()
                  if p.is_file() and p.suffix.lower() in prepare_mod.AUDIO_EXT)
              if proj.raw.exists() else 0)
@@ -128,8 +133,8 @@ def compute(proj: config.Project, jobs: list[dict]) -> dict:
             return [{"met": n_src > 0,
                      "text": f"{n_src} source files to segment"}]
         if stage == "transcribe":
-            return [{"met": n_rows > 0,
-                     "text": f"{n_rows} clips in the dataset"}]
+            return [{"met": n_wavs > 0,
+                     "text": f"{n_wavs} clips in dataset/wavs"}]
         if stage == "audit":
             text = f"{n_rows} clips in the dataset"
             if n_quarantine:

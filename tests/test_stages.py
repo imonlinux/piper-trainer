@@ -40,7 +40,7 @@ def test_fresh_project_sources_ready_rest_locked(tmp_path):
         {"met": False, "text": "0 source files in raw/"}]
     for s in ("prepare", "transcribe", "audit", "train", "voices"):
         assert stage(data, s)["status"] == "locked", s
-    assert stage(data, "transcribe")["blocked_by"] == "0 clips in the dataset"
+    assert stage(data, "transcribe")["blocked_by"] == "0 clips in dataset/wavs"
     assert stage(data, "voices")["blocked_by"] == \
         "no checkpoint yet — run training first"
     assert data["next"] == {"stage": "sources", "why": "add your first source"}
@@ -60,15 +60,37 @@ def test_sources_unlock_prepare_only(tmp_path):
     assert stage(data, "transcribe")["status"] == "locked"
 
 
-def test_dataset_rows_unlock_transcribe_audit_train(tmp_path):
+def test_wavs_unlock_transcribe_rows_unlock_audit_train(tmp_path):
     proj = make_proj(tmp_path)
     (proj.raw / "a.wav").write_bytes(b"x")
     proj.metadata.write_text("c1|hello world\n")
     data = stages.compute(proj, [])
-    for s in ("transcribe", "audit", "train"):
+    # metadata rows are audit/train's input, not transcribe's: that
+    # stage consumes dataset/wavs and CREATES metadata.csv
+    for s in ("audit", "train"):
         assert stage(data, s)["status"] == "ready", s
+    assert stage(data, "transcribe")["status"] == "locked", "transcribe"
+    assert stage(data, "transcribe")["blocked_by"] == "0 clips in dataset/wavs"
+    (proj.wavs / "c1.wav").write_bytes(b"x")
+    data = stages.compute(proj, [])
+    assert stage(data, "transcribe")["status"] == "ready", "transcribe"
     assert stage(data, "voices")["status"] == "locked"
     assert data["next"]["stage"] == "prepare"
+
+
+def test_transcribe_gate_counts_wavs_not_metadata(tmp_path):
+    # Regression (James, 2026-09-09): after a successful prepare the
+    # transcribe page said "not ready: 0 clips in the dataset" while the
+    # run button worked fine — the gate counted metadata.csv rows, the
+    # file transcription itself creates.
+    proj = make_proj(tmp_path)
+    (proj.wavs / "c1.wav").write_bytes(b"x")
+    assert not proj.metadata.exists()
+    data = stages.compute(proj, [])
+    st = stage(data, "transcribe")
+    assert st["status"] == "ready"
+    assert st["requirements"] == [
+        {"met": True, "text": "1 clips in dataset/wavs"}]
 
 
 def test_precedence_active_over_attn_over_done(tmp_path):
@@ -97,6 +119,7 @@ def test_precedence_active_over_attn_over_done(tmp_path):
 def test_earlier_stage_rerun_supersedes_done(tmp_path):
     proj = make_proj(tmp_path)
     (proj.raw / "a.wav").write_bytes(b"x")
+    (proj.wavs / "c1.wav").write_bytes(b"x")
     proj.metadata.write_text("c1|hello\n")
     jobs = [
         job("transcribe", "succeeded", finished_at="2026-09-01T01:00:00Z"),
@@ -248,7 +271,7 @@ def test_next_falls_back_to_locked_frontier(tmp_path):
     data = stages.compute(proj, jobs)
     assert stage(data, "prepare")["status"] == "done"
     assert data["next"] == {"stage": "transcribe",
-                            "why": "0 clips in the dataset"}
+                            "why": "0 clips in dataset/wavs"}
 
 
 def test_later_preview_does_not_supersede_downstream(tmp_path):
