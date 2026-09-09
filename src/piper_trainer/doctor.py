@@ -125,7 +125,10 @@ def piper_espeak_voices() -> list[str] | None:
             for line in f.read_text(errors="replace").splitlines():
                 line = line.strip()
                 if line.startswith("language "):
-                    ident = line.split(None, 1)[1].strip()
+                    # "language en-us 2": the trailing number is a
+                    # priority, not part of the voice name — keeping it
+                    # produced invalid names like "en-us 2"
+                    ident = line.split()[1]
                     break
         except OSError:
             continue

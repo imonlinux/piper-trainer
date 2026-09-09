@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import time
+import types
 
 import pytest
 from fastapi.testclient import TestClient
@@ -102,6 +103,52 @@ def test_espeak_voices(client, monkeypatch):
     monkeypatch.setattr(doctor, "espeak_voices", boom)
     assert client.get("/api/espeak-voices").json() == {"source": "none",
                                                        "voices": []}
+
+
+def test_piper_espeak_voices_parses_language_directive(tmp_path, monkeypatch):
+    # Real en-US voice file: "language en-us 2" — identifier + priority.
+    # The priority is not part of the name; keeping it once made the
+    # selector offer and default to "en-us 2", which phonemize rejects.
+    data = tmp_path / "espeak-ng-data"
+    lang = data / "lang" / "gmw"
+    lang.mkdir(parents=True)
+    (lang / "en-US").write_text(
+        "name English (America)\nlanguage en-us 2\nlanguage en 3\n")
+    (lang / "en-gb-x-rp").write_text("language en-gb-x-rp 5\n")
+    pkg = types.ModuleType("piper")
+    sub = types.ModuleType("piper.phonemize_espeak")
+    sub.ESPEAK_DATA_DIR = str(data)
+    pkg.phonemize_espeak = sub
+    monkeypatch.setitem(sys.modules, "piper", pkg)
+    monkeypatch.setitem(sys.modules, "piper.phonemize_espeak", sub)
+    assert doctor.piper_espeak_voices() == ["en-gb-x-rp", "en-us"]
+
+
+def test_train_gates_espeak_voice_at_submit(client, monkeypatch):
+    # A voice the bundled data does not know must fail at submit with a
+    # clear message, not minutes into the run at phonemize time.
+    monkeypatch.setattr(doctor, "piper_espeak_voices",
+                        lambda: ["en-us", "en-gb-x-rp"])
+    assert client.post(
+        "/api/projects", json={"name": "hal", "espeak_voice": "en-us 2"}
+    ).status_code == 201
+    r = client.post("/api/projects/hal/jobs", json={"kind": "train"})
+    assert r.status_code == 400
+    assert "en-us 2" in r.json()["detail"]
+    # the train preview runs the same gate
+    r = client.post("/api/projects/hal/preview", json={"stage": "train"})
+    assert r.status_code == 400
+    # an explicit param overrides the saved value and passes
+    r = client.post("/api/projects/hal/jobs",
+                    json={"kind": "train", "params": {"espeak_voice": "en-us"}})
+    assert r.status_code == 202
+    # a non-train preview does not phonemize, so it is not gated
+    r = client.post("/api/projects/hal/preview", json={"stage": "segment"})
+    assert r.status_code == 202
+    # no bundled data -> nothing to check against, gate stays open
+    monkeypatch.setattr(doctor, "piper_espeak_voices", lambda: None)
+    r = client.post("/api/projects/hal/jobs", json={"kind": "train"})
+    assert r.status_code == 202
 
 
 # ---------------------------------------------------------------- projects

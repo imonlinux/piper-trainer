@@ -325,6 +325,11 @@ PATCH /projects/{id}/definition → {updates: {key: value}} — project.json
                                    fixes from the overview; null removes
                                    a key; `name` is immutable; 409 while
                                    jobs are active
+POST /projects/{id}/jobs        → kind=train (and /preview stage=train) is
+                                   gated at submit: an espeak_voice not in
+                                   the bundled data is a 400 with the
+                                   resolved name, not a failure minutes
+                                   into the run at phonemize time
 GET  /tiers                     → tier names, sample rates, architecture params
 ```
 

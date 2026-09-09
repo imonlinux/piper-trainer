@@ -447,6 +447,22 @@ def create_app(workspace: Path | None = None,
 
     # ---------------------------------------------------------------- jobs
 
+    def gate_espeak_voice(proj: Project, params: dict) -> None:
+        """Reject a train submit whose espeak voice is not in piper's
+        bundled espeak-ng data, instead of failing at phonemize time
+        minutes into the run. Read-only mirror of runner._espeak_voice's
+        resolution (explicit params > saved > en-us); skipped when the
+        bundled data is not importable (nothing to check against)."""
+        voices = doctor.piper_espeak_voices()
+        if voices is None:
+            return
+        voice = (params.get("espeak_voice")
+                 or proj.get("espeak_voice") or "en-us")
+        if voice not in voices:
+            raise HTTPException(
+                400, f"invalid espeak voice {voice!r}: not in piper's "
+                     "bundled espeak-ng data — see /api/espeak-voices")
+
     @app.post("/api/projects/{project_id}/jobs", status_code=202)
     async def create_job(project_id: str, body: JobCreate):
         proj = project_or_404(project_id)
@@ -455,6 +471,8 @@ def create_app(workspace: Path | None = None,
             # promote saves the tuner's winning dials as prepare_params;
             # a plain "run prepare" starts from those, explicit params win
             params = {**(proj.get("prepare_params") or {}), **params}
+        if body.kind == "train":
+            gate_espeak_voice(proj, params)
         try:
             return await manager().submit(proj.root, body.kind,
                                           stage=body.stage,
@@ -739,6 +757,8 @@ def create_app(workspace: Path | None = None,
     @app.post("/api/projects/{project_id}/preview", status_code=202)
     async def create_preview(project_id: str, body: PreviewCreate):
         proj = project_or_404(project_id)
+        if body.stage == "train":
+            gate_espeak_voice(proj, body.params or {})
         try:
             return await manager().submit(
                 proj.root, "preview",
