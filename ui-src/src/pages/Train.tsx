@@ -587,13 +587,17 @@ export function TrainPage({ name }: { name: string }) {
         </label>
         <label className="inline">
           batch size
-          <input
-            type="number"
-            min={1}
+          <select
             value={batch}
-            style={{ width: "5em" }}
             onChange={(e) => setBatch(e.target.value)}
-          />
+            title="larger batches train faster but need more GPU memory; 32 is the piper recipe and does not fit small GPUs — on an 8 GB card use 16 or 8"
+          >
+            {["4", "8", "16", "32", "64"].map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
         </label>
         <label
           className="inline"
