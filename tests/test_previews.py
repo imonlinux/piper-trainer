@@ -257,7 +257,8 @@ def train_stubs(monkeypatch):
     commands: list[list[str]] = []
     monkeypatch.setattr(runner, "validate_dataset", lambda *a, **k: [])
     monkeypatch.setattr(runner.train_mod, "run",
-                        lambda cmd: commands.append(cmd) or 0)
+                        lambda cmd, cwd=None, tail=None:
+                        commands.append(cmd) or 0)
     return commands
 
 
@@ -327,7 +328,7 @@ def test_train_preview_resume_adds_global_steps(
     monkeypatch.setattr(runner.train_mod, "checkpoint_global_step",
                         lambda path: 3100)
 
-    def slow_run(cmd):
+    def slow_run(cmd, cwd=None, tail=None):
         # burn real wall clock so the no-bar fallback measures a sane rate
         commands.append(cmd)
         t0 = time.monotonic()
@@ -355,7 +356,8 @@ def test_train_preview_exit_code_raises(tmp_path, monkeypatch, quiet_sleep):
     jd, root = make_job(tmp_path, {"stage": "train", "max_epochs": 10,
                                    "batch_size": 4, "skip_validate": True})
     add_rows(root)
-    monkeypatch.setattr(runner.train_mod, "run", lambda cmd: 1)
+    monkeypatch.setattr(runner.train_mod, "run",
+                        lambda cmd, cwd=None, tail=None: 1)
     with pytest.raises(RuntimeError,
                        match="the full run would have failed the same way"):
         runner.execute(jd)

@@ -262,14 +262,16 @@ def _train(project: Project, params: dict, emit) -> dict:
         args=(project.runs(tier), stop, lambda line: print(line, flush=True)),
         daemon=True)
     tailer.start()
+    out_tail: list[str] = []
     try:
         # run() prints the command itself; printing here too doubled it in the log
-        code = train_mod.run(cmd)
+        code = train_mod.run(cmd, tail=out_tail)
     finally:
         stop.set()
         tailer.join(timeout=10)
     if code != 0:
-        raise RuntimeError(f"training exited with code {code}")
+        hint = train_mod.oom_hint(out_tail)
+        raise RuntimeError(hint or f"training exited with code {code}")
     latest = train_mod.latest_checkpoint(project, tier)
     # start_epoch: where THIS run began counting. A resumed run ("N more")
     # starts at the checkpoint's epoch, so wall-clock math that divides by
@@ -756,13 +758,16 @@ def _preview_train(project: Project, params: dict, emit) -> dict:
     print(f"train preview ({mode}): {steps} steps, batch {batch_size}, "
           f"{rows} clips; all outputs -> {pdir}", flush=True)
     t0 = time.monotonic()
-    code = train_mod.run(cmd)
+    out_tail: list[str] = []
+    code = train_mod.run(cmd, tail=out_tail)
     elapsed = time.monotonic() - t0
     if code != 0:
+        hint = train_mod.oom_hint(out_tail)
         raise RuntimeError(
-            f"train preview exited with code {code} after {elapsed:.0f}s — "
-            "the full run would have failed the same way; the reason is in "
-            "the log above")
+            hint
+            or f"train preview exited with code {code} after "
+               f"{elapsed:.0f}s — the full run would have failed the same "
+               "way; the reason is in the log above")
 
     rate = _step_rate_from_log(params["_job_dir"] / "log.txt")
     rate_source = "progress-bar"

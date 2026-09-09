@@ -166,6 +166,45 @@ def latest_checkpoint(project: Project, tier: str) -> Path | None:
     return last[-1] if last else cands[-1]
 
 
-def run(cmd: list[str], cwd: Path | None = None) -> int:
+def run(cmd: list[str], cwd: Path | None = None,
+        tail: list[str] | None = None) -> int:
+    """Run the trainer, relaying its output live to ours.
+
+    With `tail`, the last ~8 KiB of output are also appended to that
+    list (as one string), so a failed exit can be diagnosed — CUDA OOM
+    names its cause at the very end of a long traceback — without
+    re-reading the log. Without it, behaviour is the plain inherited-
+    stdout call.
+    """
     print(" \\\n  ".join(cmd), flush=True)
-    return subprocess.call(cmd, cwd=str(cwd) if cwd else None)
+    if tail is None:
+        return subprocess.call(cmd, cwd=str(cwd) if cwd else None)
+    proc = subprocess.Popen(
+        cmd, cwd=str(cwd) if cwd else None,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert proc.stdout is not None
+    tail.clear()
+    kept = bytearray()
+    while True:
+        chunk = proc.stdout.read(1 << 12)
+        if not chunk:
+            break
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+        kept.extend(chunk)
+        del kept[:-8192]
+    proc.stdout.close()
+    code = proc.wait()
+    tail.append(kept.decode("utf-8", errors="replace"))
+    return code
+
+
+def oom_hint(tail: list[str]) -> str | None:
+    """An actionable message when the captured output ends in a CUDA
+    out-of-memory traceback — the default 'exited with code 1' hides a
+    fixable dial behind what reads as a crash."""
+    if "OutOfMemoryError" not in "".join(tail):
+        return None
+    return ("CUDA out of memory: this batch size does not fit the GPU — "
+            "run again with a smaller batch size (try 16, then 8) or a "
+            "lower tier")

@@ -191,3 +191,32 @@ def test_latest_checkpoint_falls_back_to_newest_ckpt(tmp_path):
     touch(base / "version_0" / "checkpoints" / "epoch=2.ckpt", t0)
     assert latest_checkpoint(proj, "medium") == \
         base / "version_0" / "checkpoints" / "epoch=2.ckpt"
+
+
+# ------------------------------------------------------------------------ run
+
+def test_run_tail_captures_only_the_end_and_oom_hint():
+    # James's 50-epoch baseline died with a CUDA OOM at the very end of
+    # a long traceback while the job error said only "exited with code
+    # 1". run(tail=...) keeps the last ~8 KiB so oom_hint can name the
+    # fixable dial; early output is dropped.
+    import sys
+
+    from piper_trainer.train import oom_hint, run
+
+    code = (
+        "import sys\n"
+        "for i in range(3000):\n"
+        "    print(f'line {i}')\n"
+        "print('torch.OutOfMemoryError: CUDA out of memory. '\n"
+        "      'Tried to allocate 20.00 MiB.', file=sys.stderr)\n"
+    )
+    tail: list[str] = []
+    rc = run([sys.executable, "-c", code], tail=tail)
+    assert rc == 0
+    assert len(tail) == 1
+    assert "torch.OutOfMemoryError" in tail[0]
+    assert "line 0" not in tail[0]  # bounded: the head is gone
+    assert "line 2999" in tail[0]
+    assert "smaller batch size" in oom_hint(tail)
+    assert oom_hint(["clean output, no crash"]) is None

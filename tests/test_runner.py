@@ -128,7 +128,8 @@ def test_train_add_epochs_implies_resume_auto(tmp_path, monkeypatch):
     monkeypatch.setattr(
         runner.train_mod, "build_command",
         lambda project, **kw: seen.update(kw) or ["echo", "train"])
-    monkeypatch.setattr(runner.train_mod, "run", lambda cmd: 0)
+    monkeypatch.setattr(runner.train_mod, "run",
+                        lambda cmd, cwd=None, tail=None: 0)
 
     result = runner.execute(jd)
 
@@ -195,3 +196,32 @@ def test_main_reports_failure_as_result(tmp_path, capsys):
 def test_main_usage_error(tmp_path, capsys):
     assert runner.main([]) == 2
     assert "usage:" in capsys.readouterr().err
+
+
+def test_train_failure_names_oom_not_just_exit_code(tmp_path, monkeypatch):
+    # James's 50-epoch baseline: a CUDA OOM buried at the end of a long
+    # traceback reported only "training exited with code 1". The train
+    # handler reads run()'s captured tail and says what to change.
+    jd = make_job(tmp_path, "train",
+                  {"skip_validate": True, "max_epochs": 1})
+
+    def fake_run(cmd, cwd=None, tail=None):
+        assert tail is not None
+        tail.append("torch.OutOfMemoryError: CUDA out of memory. "
+                    "Tried to allocate 20.00 MiB.")
+        return 1
+    monkeypatch.setattr(runner.train_mod, "run", fake_run)
+    with pytest.raises(RuntimeError) as exc:
+        runner.execute(jd)
+    assert "smaller batch size" in str(exc.value)
+
+
+def test_train_failure_without_oom_keeps_plain_message(tmp_path, monkeypatch):
+    jd = make_job(tmp_path, "train",
+                  {"skip_validate": True, "max_epochs": 1})
+    monkeypatch.setattr(
+        runner.train_mod, "run",
+        lambda cmd, cwd=None, tail=None: tail.append("boom") or 1)
+    with pytest.raises(RuntimeError) as exc:
+        runner.execute(jd)
+    assert "training exited with code 1" in str(exc.value)
