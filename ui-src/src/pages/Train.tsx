@@ -65,14 +65,31 @@ export function validCatalogPath(p: string): boolean {
 }
 
 export function TrainPage({ name }: { name: string }) {
+  // Dials survive a reload, per project (sessionStorage): measuring at
+  // batch 4 and then refreshing must not project batch-32 math next to
+  // the batch-4 measurement — that mismatch reads as contradictory data.
+  const savedDials: Partial<{
+    mode: Mode;
+    epochs: string;
+    batch: string;
+    skip: boolean;
+  }> = (() => {
+    try {
+      return JSON.parse(
+        sessionStorage.getItem(`piper-train-dials:${name}`) ?? "{}",
+      );
+    } catch {
+      return {};
+    }
+  })();
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [ckpts, setCkpts] = useState<Checkpoint[]>([]);
   const [gone, setGone] = useState(false);
-  const [mode, setMode] = useState<Mode>("continue");
+  const [mode, setMode] = useState<Mode>(savedDials.mode ?? "continue");
   const [warmSel, setWarmSel] = useState("");
-  const [epochs, setEpochs] = useState("1000");
-  const [batch, setBatch] = useState("32");
-  const [skip, setSkip] = useState(false);
+  const [epochs, setEpochs] = useState(savedDials.epochs ?? "1000");
+  const [batch, setBatch] = useState(savedDials.batch ?? "32");
+  const [skip, setSkip] = useState(savedDials.skip ?? false);
   const [preview, setPreview] = useState<TrainPreview | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -87,6 +104,18 @@ export function TrainPage({ name }: { name: string }) {
   const [fullLog, setFullLog] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const logPre = useRef<HTMLPreElement>(null);
+
+  // Persist the dials as they change (same key the initializers read).
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        `piper-train-dials:${name}`,
+        JSON.stringify({ mode, epochs, batch, skip }),
+      );
+    } catch {
+      // storage unavailable (private mode etc.) — defaults are fine
+    }
+  }, [name, mode, epochs, batch, skip]);
 
   const { lines, job, logHref } = useJobStream(runId);
   const sum = useMemo(() => summarize(lines, job), [lines, job]);
@@ -145,9 +174,10 @@ export function TrainPage({ name }: { name: string }) {
         // catalog voice — fetched or merely chosen at creation — the page
         // opens on warmstart, where the fetch row lives. (Defaulting a
         // chosen-but-unfetched voice to scratch once produced a 4000-epoch
-        // from-nothing run; never again.)
+        // from-nothing run; never again.) An explicitly saved dial wins
+        // over both defaults — a reload must not flip the mode back.
         const hasRun = cks.some((c) => c.source === "run");
-        if (!hasRun) {
+        if (!hasRun && savedDials.mode === undefined) {
           setMode(
             cks.some((c) => c.source === "catalog") || d.config.catalog_path
               ? "warm"
@@ -159,7 +189,9 @@ export function TrainPage({ name }: { name: string }) {
           -1,
           ...cks.filter((c) => c.source === "run").map((c) => c.epoch ?? -1),
         );
-        setEpochs(ep >= 0 ? "1000" : "4000");
+        if (savedDials.epochs === undefined) {
+          setEpochs(ep >= 0 ? "1000" : "4000");
+        }
       })
       .catch((e: Error) => {
         if (!alive) return;
@@ -676,11 +708,17 @@ export function TrainPage({ name }: { name: string }) {
               <th>basis</th>
               <td>{preview.basis ?? "first run measures it"}</td>
             </tr>
+            <tr>
+              <th>dials</th>
+              <td colSpan={3} className="num">
+                batch {preview.batch_size} × {preview.epochs} epochs
+              </td>
+            </tr>
           </tbody>
         </table>
       )}
 
-      <h2>Current run</h2>
+      <h2>{running ? "Current run" : "Last run"}</h2>
       {job === null ? (
         <p className="muted">no train job yet — configure and start one</p>
       ) : (
