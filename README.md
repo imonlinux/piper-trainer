@@ -1,5 +1,9 @@
 # piper-trainer
 
+> ⚠️ **WORK IN PROGRESS — SINGLE-USER QA TOOL, NOT PRODUCTION-READY.**
+> The pipeline runs end to end, but expect rough edges: one training job at
+> a time, one operator, no releases yet.
+
 A packaged, reproducible training pipeline for [piper1-gpl](https://github.com/OHF-Voice/piper1-gpl) — dataset prep through to a deployable Home Assistant voice.
 
 Existing Piper training GUIs wrap the **archived** `rhasspy/piper` toolchain. This packages the current one, with every Linux build trap pre-solved, and adds a ROCm/gfx1151 variant that doesn't otherwise exist.
