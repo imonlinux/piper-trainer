@@ -255,7 +255,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ok else 1
 
     if args.cmd == "voices":
-        print("\n".join(doctor.espeak_voices(args.prefix)))
+        # the bundled list is what training phonemizes with; the system
+        # binary's list is only a fallback for a broken piper install
+        bundled = doctor.piper_espeak_voices()
+        if bundled is not None:
+            print("\n".join(v for v in bundled if v.startswith(args.prefix)))
+        else:
+            print("\n".join(doctor.espeak_voices(args.prefix)))
         return 0
 
     # ------------------------------------------------------------------ serve

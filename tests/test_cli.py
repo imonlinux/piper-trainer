@@ -89,6 +89,37 @@ def test_validate_uses_saved_tier(tmp_path):
     # saved tier is respected — covered by the rate check in validate tests
 
 
+def test_validate_espeak_gate_uses_bundled_data(tmp_path, monkeypatch):
+    # The voice gate must check piper's bundled espeak-ng data — the copy
+    # training phonemizes with — not the system binary's list. The system
+    # still ships en-gb; piper does not, and an en-gb project once passed
+    # every check and died at the first phonemize.
+    import subprocess as sp
+
+    from piper_trainer import doctor
+    from piper_trainer.config import Project
+    from piper_trainer.validate import validate_dataset
+
+    proj = Project(root=tmp_path, name="t")
+    proj.metadata.parent.mkdir(parents=True)
+    proj.metadata.write_text("clip1|hello world\n")
+
+    monkeypatch.setattr(doctor, "piper_espeak_voices",
+                        lambda: ["en-us", "en-gb-x-rp"])
+    codes = [f.code for f in validate_dataset(proj, espeak_voice="en-gb")]
+    assert "espeak-voice" in codes
+    # a voice the bundled data knows passes with no espeak-ng binary at all
+    codes = [f.code for f in validate_dataset(proj, espeak_voice="en-gb-x-rp")]
+    assert "espeak-voice" not in codes and "espeak-missing" not in codes
+
+    # no bundled data -> the system-binary fallback still applies
+    monkeypatch.setattr(doctor, "piper_espeak_voices", lambda: None)
+    monkeypatch.setattr(sp, "run", lambda *a, **k: type("R", (), {
+        "stdout": "  5  en-us  --  English (America)\n"})())
+    codes = [f.code for f in validate_dataset(proj, espeak_voice="en-gb")]
+    assert "espeak-voice" in codes
+
+
 def test_serve_runs_uvicorn(monkeypatch):
     import uvicorn
     calls = {}

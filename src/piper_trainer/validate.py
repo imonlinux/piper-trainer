@@ -7,7 +7,7 @@ import subprocess
 import wave
 from pathlib import Path
 
-from . import metadata
+from . import doctor, metadata
 from .config import Project, TIERS
 
 # What espeak-ng will mangle if left in a transcript.
@@ -215,24 +215,36 @@ def validate_dataset(project: Project, tier: str = "medium",
 
     # --- espeak voice --------------------------------------------------------
     if espeak_voice:
-        try:
-            voices = subprocess.run(["espeak-ng", "--voices"],
-                                    capture_output=True, text=True,
-                                    check=True).stdout
-        except FileNotFoundError:
-            f.append(Finding("error", "espeak-missing",
-                             "espeak-ng binary not found on PATH — "
-                             "phonemization (and training) will fail"))
-        except subprocess.CalledProcessError as exc:
-            f.append(Finding("error", "espeak-missing",
-                             f"espeak-ng --voices failed: {exc}"))
-        else:
-            names = {ln.split()[1] for ln in voices.splitlines()[1:]
-                     if len(ln.split()) > 1}
-            if espeak_voice not in names:
+        # Check against piper's bundled espeak-ng data — the copy training
+        # actually phonemizes with — not the system binary's list. The two
+        # diverge (the system ships en-gb, piper does not), so a voice the
+        # system accepts still dies at the first phonemize.
+        bundled = doctor.piper_espeak_voices()
+        if bundled is not None:
+            if espeak_voice not in bundled:
                 f.append(Finding("error", "espeak-voice",
-                                 f"'{espeak_voice}' is not an espeak voice. "
-                                 f"Run: espeak-ng --voices"))
+                                 f"'{espeak_voice}' is not in piper's "
+                                 f"bundled espeak-ng data. Run: "
+                                 f"piper-trainer voices"))
+        else:
+            try:
+                voices = subprocess.run(["espeak-ng", "--voices"],
+                                        capture_output=True, text=True,
+                                        check=True).stdout
+            except FileNotFoundError:
+                f.append(Finding("error", "espeak-missing",
+                                 "espeak-ng binary not found on PATH — "
+                                 "phonemization (and training) will fail"))
+            except subprocess.CalledProcessError as exc:
+                f.append(Finding("error", "espeak-missing",
+                                 f"espeak-ng --voices failed: {exc}"))
+            else:
+                names = {ln.split()[1] for ln in voices.splitlines()[1:]
+                         if len(ln.split()) > 1}
+                if espeak_voice not in names:
+                    f.append(Finding("error", "espeak-voice",
+                                     f"'{espeak_voice}' is not an espeak "
+                                     f"voice. Run: espeak-ng --voices"))
 
     return f
 

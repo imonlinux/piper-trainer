@@ -33,6 +33,17 @@ def check() -> tuple[list[str], bool]:
         except Exception as exc:  # noqa: BLE001
             mark(False, f"{label}: {exc}")
 
+    # piper's bundled espeak-ng data — the copy training actually phonemizes
+    # with. Its absence is how an en-GB project passed every check and died
+    # on the first phonemize (the system binary still ships en-gb).
+    bundled = piper_espeak_voices()
+    if bundled is None:
+        mark(False, "piper bundled espeak-ng data not importable — voice "
+                    "gates fall back to the system list, which diverges "
+                    "(system has en-gb, piper does not)")
+    else:
+        lines.append(f"· piper bundled espeak-ng data: {len(bundled)} voices")
+
     # pipeline libraries
     for mod in ("auditok", "faster_whisper", "onnxscript", "lightning"):
         try:
